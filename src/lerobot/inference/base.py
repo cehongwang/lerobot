@@ -23,13 +23,14 @@ from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from threading import Lock
-from typing import Any, Protocol
-
-import torch
+from typing import TYPE_CHECKING, Any, Protocol
 
 from lerobot.utils import QUERY_KIND, QUERY_TEXT
 
 from .contracts import DEFAULT_MAX_TEXT_INPUT_CHARS, QueryKind
+
+if TYPE_CHECKING:
+    import torch
 
 logger = logging.getLogger(__name__)
 
