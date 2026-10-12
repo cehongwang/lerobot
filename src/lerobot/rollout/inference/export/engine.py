@@ -36,8 +36,9 @@ import json
 import logging
 import time
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 from safetensors.numpy import load_file
@@ -119,7 +120,7 @@ class ProgramChain:
     the host.
     """
 
-    def __init__(self, programs: dict[str, Program], info: dict):
+    def __init__(self, programs: Mapping[str, Any], info: dict):
         if info["num_steps"] <= 0:
             raise ValueError("num_steps must be positive")
         self._programs = programs

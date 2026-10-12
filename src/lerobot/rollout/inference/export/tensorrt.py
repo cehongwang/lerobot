@@ -183,7 +183,7 @@ class TensorRTEngine:
         self._input_names = input_names
         self._input_shapes = [tuple(self._engine.get_tensor_shape(name)) for name in input_names]
         self._input_dtypes = [numpy_dtype(self._engine.get_tensor_dtype(name)) for name in input_names]
-        self._inputs = {}
+        self._inputs: dict[str, CudaBuffer] = {}
         self._output_names = output_names
         self._outputs = [
             CudaBuffer(self._engine.get_tensor_shape(name), numpy_dtype(self._engine.get_tensor_dtype(name)))
@@ -194,7 +194,7 @@ class TensorRTEngine:
                 raise RuntimeError(f"TensorRT could not bind output {name}")
         self._cuda_graphs = cuda_graphs
         self._graph = None
-        self._graph_inputs = None
+        self._graph_inputs: tuple[int, ...] | None = None
 
     @property
     def input_shape(self) -> tuple[int, ...]:
@@ -269,7 +269,9 @@ class TensorRTEngine:
             check_cuda(cuda.cudaGraphDestroy(graph))
             self._graph_inputs = addresses
         elif addresses != self._graph_inputs:
-            raise ValueError("The CUDA graph reads the input buffers it recorded; pass the same ones every run.")
+            raise ValueError(
+                "The CUDA graph reads the input buffers it recorded; pass the same ones every run."
+            )
         check_cuda(cuda.cudaGraphLaunch(self._graph, stream))
 
     def __call__(self, *inputs: np.ndarray | CudaBuffer) -> np.ndarray | tuple[np.ndarray, ...]:
