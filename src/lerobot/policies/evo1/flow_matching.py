@@ -426,6 +426,7 @@ class FlowmatchingActionHead(nn.Module):
             noise = sample_noise(
                 (batch_size, action_dim_total), device, dtype=context_tokens.dtype, distribution="uniform"
             )
+        noise = noise.to(device=device, dtype=context_tokens.dtype)
         action_seq = noise.view(batch_size, self.horizon, per_action_dim)
         action_mask = self._expand_action_mask(
             action_mask,
