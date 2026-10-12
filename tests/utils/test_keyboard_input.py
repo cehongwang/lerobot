@@ -23,6 +23,7 @@ neither ``pynput`` nor a real terminal.
 """
 
 import io
+import logging
 import platform
 import sys
 
@@ -131,9 +132,12 @@ def test_pynput_listener_is_trusted(monkeypatch):
 
 
 # --- Control mapping --------------------------------------------------------
-def test_apply_recording_control():
+def test_apply_recording_control(caplog):
     events = {"exit_early": False, "rerecord_episode": False, "stop_recording": False}
-    apply_recording_control("left", events)
+    with caplog.at_level(logging.INFO):
+        apply_recording_control("left", events)
+    # Logged, not printed, so the rollout status line clears itself before the message.
+    assert "Left arrow key pressed" in caplog.text
     assert events == {"exit_early": True, "rerecord_episode": True, "stop_recording": False}
     apply_recording_control("esc", events)
     assert events["stop_recording"] is True

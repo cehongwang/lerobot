@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import statistics
 import sys
 import threading
@@ -109,7 +110,8 @@ class StatusLine:
 
     def _draw_loop(self) -> None:
         while not self._stop.wait(REFRESH_S):
-            line = self._format()
+            # A line wider than the terminal wraps, and clearing the last row would leave the rest behind.
+            line = self._format()[: shutil.get_terminal_size().columns - 1]
             with self._lock:
                 self._stream.write(CLEAR_LINE + line)
                 self._stream.flush()

@@ -19,6 +19,7 @@ from __future__ import annotations
 import dataclasses
 import io
 import logging
+import os
 import sys
 import threading
 import time
@@ -1606,6 +1607,25 @@ def test_status_line_redraws_in_place_and_steps_aside_for_log_records():
     assert "infer  25.0 ms (worst  30.0)" in output
     assert "\r\033[2Ka log record\n" in output
     assert output.endswith("\n")
+
+
+def test_status_line_fits_the_terminal_width():
+    """A wrapped line would leave a row behind on every redraw, since clearing only reaches the last row."""
+    from lerobot.rollout.status_line import StatusLine
+
+    terminal = _FakeTerminal()
+    engine = SimpleNamespace(inference_seconds=deque([0.020]))
+    with (
+        patch("lerobot.rollout.status_line.REFRESH_S", 0.01),
+        patch(
+            "lerobot.rollout.status_line.shutil.get_terminal_size", return_value=os.terminal_size((20, 24))
+        ),
+        StatusLine(SimpleNamespace(observation_times=deque()), engine, 30, stream=terminal),
+    ):
+        time.sleep(0.05)
+    lines = [line for line in terminal.getvalue().split("\r\033[2K") if line.strip()]
+    assert lines
+    assert all(len(line.rstrip("\n")) <= 19 for line in lines)
 
 
 def test_status_line_stays_silent_off_a_terminal():
