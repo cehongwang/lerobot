@@ -64,10 +64,9 @@ def test_xvla_select_action_computes_chunks_through_predict_action_chunk(monkeyp
     noise = torch.zeros(1, CHUNK, ACTION_DIM)
     batch = {OBS_STATE: torch.zeros(1, 2)}
 
-    first = policy.select_action(batch, noise=noise)
-    for _ in range(CHUNK):
-        policy.select_action(batch, noise=noise)
+    actions = [policy.select_action(batch, noise=noise) for _ in range(CHUNK + 1)]
 
     assert len(calls) == 2, "select_action did not compute its chunks through predict_action_chunk"
     assert calls[0] is noise, "select_action did not pass its noise to predict_action_chunk"
-    torch.testing.assert_close(first, torch.arange(ACTION_DIM, dtype=torch.float32).reshape(1, ACTION_DIM))
+    chunk = torch.arange(CHUNK * ACTION_DIM, dtype=torch.float32).reshape(CHUNK, 1, ACTION_DIM)
+    torch.testing.assert_close(torch.stack(actions), torch.cat([chunk, chunk[:1]]))
