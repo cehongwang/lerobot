@@ -672,6 +672,8 @@ def test_evo1_predict_action_chunk_default_noise_unchanged(monkeypatch):
     noise = torch.rand(2, CHUNK_SIZE * MAX_ACTION_DIM, dtype=torch.float32) * 2 - 1
 
     assert torch.equal(default_actions, policy.predict_action_chunk(batch, noise=noise))
+    # A given noise is moved to the dtype of the draw it replaces.
+    assert torch.equal(default_actions, policy.predict_action_chunk(batch, noise=noise.double()))
 
 
 def test_flowmatching_rtc_guidance_pulls_prefix_toward_previous_chunk():
