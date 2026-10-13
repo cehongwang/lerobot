@@ -374,10 +374,27 @@ def test_legacy_text_pipeline_keeps_state_not_listed_as_program_input(tmp_path, 
 
 @pytest.mark.parametrize("split", [False, True])
 @pytest.mark.parametrize("positive", [False, True])
-def test_device_resident_chain_passes_cuda_tensors_between_programs(tmp_path, monkeypatch, split, positive):
-    """Only final actions cross to NumPy, including when the velocity uses several programs."""
+@pytest.mark.parametrize("dlpack_outputs", [False, True])
+def test_device_resident_chain_passes_cuda_tensors_between_programs(
+    tmp_path, monkeypatch, split, positive, dlpack_outputs
+):
+    """Only final actions cross to NumPy, including when the velocity uses several programs.
+
+    With `dlpack_outputs`, the programs return DLPack objects that are not torch tensors, and the chain still
+    passes torch tensors between programs.
+    """
     torch = pytest.importorskip("torch")
     from lerobot.rollout.inference.export import executorch
+
+    class DLPackOnly:
+        def __init__(self, tensor):
+            self._tensor = tensor
+
+        def __dlpack__(self, **kwargs):
+            return self._tensor.__dlpack__(**kwargs)
+
+        def __dlpack_device__(self):
+            return self._tensor.__dlpack_device__()
 
     received, downloaded, times = [], [], []
     to_numpy = executorch.to_numpy
@@ -388,6 +405,10 @@ def test_device_resident_chain_passes_cuda_tensors_between_programs(tmp_path, mo
 
     def load(path, data_path=None):
         def execute(inputs):
+            outputs = run(inputs)
+            return [DLPackOnly(output) for output in outputs] if dlpack_outputs else outputs
+
+        def run(inputs):
             received.append((path.name, [type(value) for value in inputs]))
             if path.name == "prefix.pte":
                 return [inputs[0] * 2]

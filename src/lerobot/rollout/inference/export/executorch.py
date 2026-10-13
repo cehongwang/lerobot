@@ -87,7 +87,11 @@ class DeviceResidentProgram(ExecuTorchProgram):
         ]
         # The delegate runs on its own CUDA stream, so the PyTorch work that wrote the inputs must finish first.
         torch.cuda.current_stream().synchronize()
-        return tuple(self._method.execute(tensors))
+        # ExecuTorch can return DLPack objects instead of tensors; from_dlpack shares their GPU memory.
+        return tuple(
+            output if isinstance(output, torch.Tensor) else torch.from_dlpack(output)
+            for output in self._method.execute(tensors)
+        )
 
     def initialize(self, *inputs: np.ndarray) -> np.ndarray | tuple[np.ndarray, ...]:
         return self(*inputs)
