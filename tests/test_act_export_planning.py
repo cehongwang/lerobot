@@ -155,7 +155,9 @@ def test_chain_torch_tensorrt_export_keeps_values_on_the_gpu(monkeypatch, policy
 def test_pi05_executorch_cuda_export_keeps_values_on_the_gpu(tmp_path, monkeypatch):
     export_parts = MagicMock()
     exir = SimpleNamespace(
-        EdgeCompileConfig=MagicMock(), ExecutorchBackendConfig=MagicMock(), to_edge_transform_and_lower=MagicMock()
+        EdgeCompileConfig=MagicMock(),
+        ExecutorchBackendConfig=MagicMock(),
+        to_edge_transform_and_lower=MagicMock(),
     )
     planning = MagicMock()
     propagate = MagicMock()
