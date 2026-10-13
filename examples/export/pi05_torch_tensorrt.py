@@ -45,4 +45,6 @@ def compile_part(
 
 
 if __name__ == "__main__":
-    export_parts(parse_args(__doc__, "torch_tensorrt"), __file__, "{name}.pt2", compile_part)
+    export_parts(
+        parse_args(__doc__, "torch_tensorrt"), __file__, "{name}.pt2", compile_part, device_resident=True
+    )

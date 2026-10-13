@@ -137,3 +137,17 @@ def test_chain_onnx_export_sets_cuda_graphs(monkeypatch, policy, cuda_graphs):
     script = Path(__file__).resolve().parents[1] / "examples" / "export" / f"{policy}_onnx_tensorrt.py"
     runpy.run_path(str(script), run_name="__main__")
     assert export_parts.call_args.kwargs.get("cuda_graphs", False) is cuda_graphs
+
+
+@pytest.mark.parametrize("policy", ["pi05", "groot"])
+def test_chain_torch_tensorrt_export_keeps_values_on_the_gpu(monkeypatch, policy):
+    export_parts = MagicMock()
+    recipe = SimpleNamespace(
+        TENSORRT_OPTIONS={}, export_parts=export_parts, parse_args=lambda *args: SimpleNamespace()
+    )
+    monkeypatch.setitem(sys.modules, f"{policy}_recipe", recipe)
+    monkeypatch.setitem(sys.modules, "torch_tensorrt", MagicMock())
+    script = Path(__file__).resolve().parents[1] / "examples" / "export" / f"{policy}_torch_tensorrt.py"
+    runpy.run_path(str(script), run_name="__main__")
+    assert export_parts.call_args.kwargs.get("device_resident", False) is True
+
