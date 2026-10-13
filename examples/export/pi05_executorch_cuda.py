@@ -32,7 +32,9 @@ from pathlib import Path
 import torch
 from executorch.backends.cuda.cuda_backend import CudaBackend
 from executorch.backends.cuda.cuda_partitioner import CudaPartitioner
-from executorch.exir import EdgeCompileConfig, to_edge_transform_and_lower
+from executorch.exir import EdgeCompileConfig, ExecutorchBackendConfig, to_edge_transform_and_lower
+from executorch.exir.passes.memory_planning_pass import MemoryPlanningPass
+from executorch.exir.passes.propagate_device_pass import PropagateDeviceConfig
 from pi05_recipe import export_parts, parse_args
 from torch import nn
 
@@ -48,7 +50,16 @@ def compile_part(
         partitioner=[CudaPartitioner([CudaBackend.generate_method_name_compile_spec("forward")])],
         compile_config=EdgeCompileConfig(_check_ir_validity=False, _skip_dim_order=True),
     )
-    executorch_program = lowered.to_executorch()
+    executorch_program = lowered.to_executorch(
+        config=ExecutorchBackendConfig(
+            propagate_device_config=PropagateDeviceConfig(
+                skip_h2d_for_method_inputs=True, skip_d2h_for_method_outputs=True
+            ),
+            enable_non_cpu_memory_planning=True,
+            # Each program reads and writes CUDA tensors the rollout owns, so the chain never copies to the host.
+            memory_planning_pass=MemoryPlanningPass(alloc_graph_input=False, alloc_graph_output=False),
+        )
+    )
     # Every program's weights file has the same name, so each program gets its own folder.
     path.parent.mkdir()
     executorch_program.save(str(path))
@@ -56,4 +67,10 @@ def compile_part(
 
 
 if __name__ == "__main__":
-    export_parts(parse_args(__doc__, "executorch_cuda"), __file__, "{name}/{name}.pte", compile_part)
+    export_parts(
+        parse_args(__doc__, "executorch_cuda"),
+        __file__,
+        "{name}/{name}.pte",
+        compile_part,
+        device_resident=True,
+    )

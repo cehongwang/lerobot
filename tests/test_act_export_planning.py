@@ -151,3 +151,36 @@ def test_chain_torch_tensorrt_export_keeps_values_on_the_gpu(monkeypatch, policy
     runpy.run_path(str(script), run_name="__main__")
     assert export_parts.call_args.kwargs.get("device_resident", False) is True
 
+
+def test_pi05_executorch_cuda_export_keeps_values_on_the_gpu(tmp_path, monkeypatch):
+    export_parts = MagicMock()
+    exir = SimpleNamespace(
+        EdgeCompileConfig=MagicMock(), ExecutorchBackendConfig=MagicMock(), to_edge_transform_and_lower=MagicMock()
+    )
+    planning = MagicMock()
+    propagate = MagicMock()
+    modules = {
+        "executorch.backends.cuda.cuda_backend": SimpleNamespace(CudaBackend=MagicMock()),
+        "executorch.backends.cuda.cuda_partitioner": SimpleNamespace(CudaPartitioner=MagicMock()),
+        "executorch.exir": exir,
+        "executorch.exir.passes.memory_planning_pass": SimpleNamespace(MemoryPlanningPass=planning),
+        "executorch.exir.passes.propagate_device_pass": SimpleNamespace(PropagateDeviceConfig=propagate),
+        "pi05_recipe": SimpleNamespace(export_parts=export_parts, parse_args=lambda *args: SimpleNamespace()),
+    }
+    for name, module in modules.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    script = Path(__file__).resolve().parents[1] / "examples" / "export" / "pi05_executorch_cuda.py"
+    runpy.run_path(str(script), run_name="__main__")
+    assert export_parts.call_args.kwargs.get("device_resident", False) is True
+    compile_part = export_parts.call_args.args[3]
+    monkeypatch.setattr("torch.export.export", MagicMock())
+    compile_part(MagicMock(), (), [], [], tmp_path / "part" / "part.pte")
+    propagate.assert_called_once_with(skip_h2d_for_method_inputs=True, skip_d2h_for_method_outputs=True)
+    planning.assert_called_once_with(alloc_graph_input=False, alloc_graph_output=False)
+    exir.ExecutorchBackendConfig.assert_called_once_with(
+        propagate_device_config=propagate.return_value,
+        enable_non_cpu_memory_planning=True,
+        memory_planning_pass=planning.return_value,
+    )
+    lowered = exir.to_edge_transform_and_lower.return_value
+    lowered.to_executorch.assert_called_once_with(config=exir.ExecutorchBackendConfig.return_value)
