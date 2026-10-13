@@ -29,7 +29,6 @@ import torch
 import torch_tensorrt
 from act_recipe import ACTExport, parse_args, save_for_build_engine
 from executorch.exir import ExecutorchBackendConfig
-from executorch.exir.backend.compile_spec_schema import CompileSpec
 from executorch.exir.passes import MemoryPlanningPass
 
 
@@ -51,7 +50,7 @@ def main() -> None:
         str(pte_path),
         output_format="executorch",
         retrace=False,
-        compile_specs=[CompileSpec("use_cuda_graphs", b"1")],
+        use_cuda_graphs=True,
         backend_config=ExecutorchBackendConfig(
             memory_planning_pass=MemoryPlanningPass(alloc_graph_input=False)
         ),

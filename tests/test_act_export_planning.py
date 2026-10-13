@@ -27,7 +27,6 @@ def test_executorch_export_shares_host_inputs_only(tmp_path, monkeypatch, deferr
     tensorrt = MagicMock()
     config = MagicMock()
     planning = MagicMock()
-    compile_spec = MagicMock()
     export = MagicMock(output_dir=tmp_path)
     save_for_build_engine = MagicMock()
     args = SimpleNamespace(
@@ -44,7 +43,6 @@ def test_executorch_export_shares_host_inputs_only(tmp_path, monkeypatch, deferr
         "torch_tensorrt": tensorrt,
         "executorch.exir": SimpleNamespace(ExecutorchBackendConfig=config),
         "executorch.exir.passes": SimpleNamespace(MemoryPlanningPass=planning),
-        "executorch.exir.backend.compile_spec_schema": SimpleNamespace(CompileSpec=compile_spec),
         "act_recipe": SimpleNamespace(
             ACTExport=MagicMock(return_value=export),
             parse_args=lambda *a: args,
@@ -78,23 +76,17 @@ def test_executorch_export_shares_host_inputs_only(tmp_path, monkeypatch, deferr
         output_format="executorch",
         retrace=False,
         backend_config=config.return_value,
-        **({} if deferred else {"compile_specs": [compile_spec.return_value]}),
+        **({} if deferred else {"use_cuda_graphs": True}),
     )
-    if deferred:
-        compile_spec.assert_not_called()
-    else:
-        compile_spec.assert_called_once_with("use_cuda_graphs", b"1")
 
 
 def test_smolvla_direct_export_enables_cuda_graphs(tmp_path, monkeypatch):
     torch = MagicMock()
     tensorrt = MagicMock()
-    compile_spec = MagicMock()
     export = MagicMock(output_dir=tmp_path)
     modules = {
         "torch": torch,
         "torch_tensorrt": tensorrt,
-        "executorch.exir.backend.compile_spec_schema": SimpleNamespace(CompileSpec=compile_spec),
         "act_recipe": SimpleNamespace(save_for_build_engine=MagicMock()),
         "smolvla_recipe": SimpleNamespace(
             SmolVLAExport=MagicMock(return_value=export),
@@ -105,19 +97,16 @@ def test_smolvla_direct_export_enables_cuda_graphs(tmp_path, monkeypatch):
         monkeypatch.setitem(sys.modules, name, module)
     script = Path(__file__).resolve().parents[1] / "examples" / "export" / "smolvla_executorch_tensorrt.py"
     runpy.run_path(str(script), run_name="__main__")
-    compile_spec.assert_called_once_with("use_cuda_graphs", b"1")
-    assert tensorrt.save.call_args.kwargs["compile_specs"] == [compile_spec.return_value]
+    assert tensorrt.save.call_args.kwargs["use_cuda_graphs"] is True
 
 
 @pytest.mark.parametrize("policy", ["pi05", "groot"])
 def test_chain_executorch_export_enables_cuda_graphs(tmp_path, monkeypatch, policy):
     tensorrt = MagicMock()
-    compile_spec = MagicMock()
     export_parts = MagicMock()
     modules = {
         "torch_tensorrt": tensorrt,
         "executorch.exir": SimpleNamespace(ExecutorchBackendConfig=MagicMock()),
-        "executorch.exir.backend.compile_spec_schema": SimpleNamespace(CompileSpec=compile_spec),
         "executorch.exir.passes.memory_planning_pass": SimpleNamespace(MemoryPlanningPass=MagicMock()),
         "executorch.exir.passes.propagate_device_pass": SimpleNamespace(PropagateDeviceConfig=MagicMock()),
         f"{policy}_recipe": SimpleNamespace(
@@ -131,8 +120,7 @@ def test_chain_executorch_export_enables_cuda_graphs(tmp_path, monkeypatch, poli
     compile_part = export_parts.call_args.args[3]
     monkeypatch.setattr("torch.export.export", MagicMock())
     compile_part(MagicMock(), (), [], [], tmp_path / "part.pte")
-    compile_spec.assert_called_once_with("use_cuda_graphs", b"1")
-    assert tensorrt.save.call_args.kwargs["compile_specs"] == [compile_spec.return_value]
+    assert tensorrt.save.call_args.kwargs["use_cuda_graphs"] is True
 
 
 @pytest.mark.parametrize("policy,cuda_graphs", [("pi05", True), ("groot", False)])

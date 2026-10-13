@@ -31,7 +31,6 @@ from pathlib import Path
 import torch
 import torch_tensorrt
 from executorch.exir import ExecutorchBackendConfig
-from executorch.exir.backend.compile_spec_schema import CompileSpec
 from executorch.exir.passes.memory_planning_pass import MemoryPlanningPass
 from executorch.exir.passes.propagate_device_pass import PropagateDeviceConfig
 from groot_recipe import TENSORRT_OPTIONS, export_parts, parse_args
@@ -50,7 +49,7 @@ def compile_part(
         output_format="executorch",
         arg_inputs=inputs,
         retrace=False,
-        compile_specs=[CompileSpec("use_cuda_graphs", b"1")],
+        use_cuda_graphs=True,
         backend_config=ExecutorchBackendConfig(
             propagate_device_config=PropagateDeviceConfig(
                 skip_h2d_for_method_inputs=True, skip_d2h_for_method_outputs=True
