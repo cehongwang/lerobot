@@ -14,20 +14,11 @@
 
 """The inference engine for an exported policy.
 
-An export script writes a folder with the compiled program, the policy's `config.json`, and an
-`export.json` naming the backend, the program's inputs, and a test case. Programs can take raw
-frame arrays or the batched, normalized images used by older exports. The raw_frame flag or the
-program's declared input shape distinguishes these contracts. Both return actions in robot units.
-
-A policy that reads the task also gets the token ids its saved text steps make from it, and a
-flow-matching policy gets the starting noise as its last input, drawn here for every chunk. A
-program compiled for one task holds that task in its weights, and `export.json` says so with
-`task_fixed`: the engine then refuses any other task.
-
-A policy too large for one program, like pi0.5 or GR00T, is exported as a chain of programs that
-`export.json` lists under `programs`; `ProgramChain` runs them in order with any backend.
-
-An ONNX-TensorRT folder whose `export.json` sets `cuda_graphs` replays each engine from a CUDA graph.
+An exported folder holds the compiled program, the policy's `config.json`, and an `export.json` naming the
+backend, the program's inputs and a test case. The engine feeds the program the robot's frame (and, for a
+flow-matching policy, fresh noise each chunk) and returns actions in robot units. A folder compiled for one
+task (`task_fixed`) refuses any other task. A policy too large for one program is exported as a chain that
+`ProgramChain` runs in order.
 """
 
 from __future__ import annotations
@@ -94,9 +85,7 @@ def load_one(
 ) -> Program:
     """Load one ExecuTorch program or AOTInductor package.
 
-    A device-resident ExecuTorch program takes and returns CUDA tensors, so a chain keeps its values on the GPU.
-    The ExecuTorch-TensorRT programs of a chain run one after another, so they share one activation scratch.
-    A lone program keeps its own scratch, because older delegates turn off CUDA graph replay on the shared one.
+    The ExecuTorch-TensorRT programs of a chain share one activation scratch, since they run one after another.
     """
     if backend == "torch_tensorrt":
         from .aoti import AOTInductorPackage
@@ -111,13 +100,9 @@ def load_one(
 class ProgramChain:
     """Run a chunk exported as a chain of programs, in the order `export.json` lists them.
 
-    Each program reads the values its `inputs` name: the frame's arrays and the noise, or the `outputs` of
-    a program before it. The program named `step`, or the programs `step_0`, `step_1` and so on, run once
-    per Euler step: the first one's last two inputs are the noisy actions, starting from the noise, and
-    the time, and the last one returns the velocity. The times are `timesteps` and the step size `dt`, by
-    default from 1 down to 0 in `num_steps` steps. The chain returns what the last program returns. A
-    program with a `run_device` method hands its outputs to the next programs without copying them to
-    the host.
+    Each program reads the frame, the noise, or the outputs of a program before it, by name. The `step`
+    program (or `step_0`, `step_1`, ...) runs once per denoising step, from `timesteps` with step size `dt`.
+    A program with `run_device` hands its outputs to the next one on the GPU.
     """
 
     def __init__(self, programs: Mapping[str, Any], info: dict):

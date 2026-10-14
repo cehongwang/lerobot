@@ -16,28 +16,15 @@
 
 """The pi0.5 export recipe: what every backend script compiles, and the folder they write.
 
-As for SmolVLA, the compiled programs are one action chunk of LeRobot's own code: the checkpoint's saved
-preprocessor, the policy's denoising loop and the saved postprocessor, with the starting noise as the
-chunk's last input. One thing differs:
+The program is one action chunk of LeRobot's own pi0.5, from the robot's raw uint8 HWC cameras, float32
+state and noise to actions in robot units. pi0.5 reads the state as bin numbers in its prompt, so the
+program digitizes it and builds the prompt from token pieces made at export time; no tokenizer runs at
+inference. The program keeps only the vocabulary rows the task's prompt can hold (about 1 GiB less),
+which ties the folder to that task (`task_fixed` in `export.json`).
 
-- The state. pi0.5 reads the normalized state as bin numbers in the prompt. The program digitizes it
-  and assembles the prompt from token pieces prepared at export time. No tokenizer runs at inference.
-
-The inputs are the robot's raw uint8 HWC cameras, float32 state and unbatched noise. Image conversion,
-resize and padding, normalization and action unnormalization all run inside the program.
-
-The checkpoint names the robot's cameras, so they come from its config, as for ACT, except the empty
-cameras pi0.5 fills in itself. The folder's config names only the cameras the program takes. The
-checkpoint does not record the task, so the export takes it on the command line.
-
-The program also keeps only the rows of the 257,152-row vocabulary that the task's prompt can hold:
-the task's own words, the fixed words around it, and the state's bins written as numbers. That saves
-about 1 GiB, and ties the folder to the task, so `export.json` marks it `task_fixed`.
-
-The export never loads the whole policy. The chunk is a chain of programs: the image and prompt
-embeddings, the language model in groups of three layers, one denoising step, and the actions. Each
-program is built in its own process, which reads only its own weights from the checkpoint, so a device
-with less memory than the policy, like an 8 GB Jetson Orin Nano, can export it.
+The chunk is a chain of programs (the embeddings, the language model in groups of three layers, one
+denoising step, and the actions), each built in its own process from only its own weights, so an 8 GB
+board can export it.
 """
 
 import argparse
@@ -125,12 +112,9 @@ def export_parts(
 ) -> None:
     """Export the chunk one program per process, each loading only its own part of the policy.
 
-    Without `--part`, make the folder and run `script` again once per part: a process returns all its
-    memory when it exits, and one that built a part keeps some of it. With `--part`, run the parts before
-    it in PyTorch to make its example inputs, then `compile_part(module, inputs, input_names, output_names,
-    path)` writes it to `file_name` formatted with the part's name. The last part also writes `export.json`,
-    which says whether the programs take and return CUDA tensors (`device_resident`) and whether the
-    ONNX-TensorRT runner replays them from CUDA graphs (`cuda_graphs`).
+    Without `--part`, run `script` again once per part, because a process that built a part keeps some of its
+    memory until it exits. With `--part`, build only that part with `compile_part`; the last part also writes
+    `export.json`.
     """
     if args.part is None:
         output_dir = make_output_dir(args.output_dir, args.job_name)
@@ -227,8 +211,7 @@ class PI05Step(nn.Module):
         past_key_values = DynamicCache(
             tuple((keys, values, None) for keys, values in zip(cache[::2], cache[1::2], strict=True))
         )
-        # The expert keeps its adaptive norms' projections in float32 for training; in bfloat16 they take
-        # 0.2 GiB instead of 0.4 GiB, which a device that must hold every part at once needs.
+        # In bfloat16 the expert's adaptive norm projections take half the memory, which the Orin Nano needs.
         with torch.autocast("cuda", dtype=torch.bfloat16):
             velocity = self.model.denoise_step(prefix_pad_masks, past_key_values, x_t[None], timestep)
         return velocity[0].float()
@@ -377,12 +360,10 @@ class PI05Export:
         return load_checkpoint_modules(PI05Policy, self.model_file, self.config, list(modules))
 
     def parts(self) -> Iterator[tuple[str, nn.Module, tuple, list[str], list[str]]]:
-        """Yield the chunk's programs one at a time, each with only its own weights in memory.
+        """Yield the chunk's programs one at a time, each with its example inputs, input names and output names.
 
-        Each program comes with its example inputs, input names and output names: the embeddings, the
-        language model in groups of `LAYERS_PER_PROGRAM` layers, one denoising step and the actions.
-        Each part runs once in PyTorch to make the next part's inputs, and the test case's actions are
-        those parts chained. Drop each module before taking the next, so only one part is ever loaded.
+        Each part runs once in PyTorch to make the next part's inputs, and is dropped before the next one
+        loads, so only one part is ever in memory.
         """
         observation, names = self.inputs[:-1], self.input_names[:-1]
         embed = PI05Embed(self.policy, self.observation)
@@ -473,9 +454,7 @@ def parse_args(description: str, backend: str) -> argparse.Namespace:
         "--output_dir", type=Path, help="Folder to write. Default: a new one under outputs/export."
     )
     parser.add_argument("--job_name", default=f"pi05_{backend}", help="Names the default output folder.")
-    # As for SmolVLA, the backbone runs in bfloat16 and TensorRT reorders its math, so a pi0.5 engine's actions
-    # drift from PyTorch's by up to about 4 on this arm, against 15 or more for wrong noise. Swapped cameras often
-    # stay under 5, so the check catches gross mistakes, not small ones.
+    # TensorRT reorders bfloat16 math, so actions drift by up to about 4; wrong noise gives 15 or more.
     parser.add_argument(
         "--tolerance", type=float, default=5.0, help="Largest allowed action error, robot units."
     )

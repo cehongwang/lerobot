@@ -16,13 +16,10 @@
 
 """The ACT export recipe: what every backend script compiles, and the folder they write.
 
-The compiled module is what `lerobot-rollout` runs for one action chunk, all of it LeRobot's own
-code: `prepare_observation_for_inference`'s image conversion, the checkpoint's saved preprocessor,
-the policy's `predict_action_chunk` trimmed to `n_action_steps` as `select_action` does, and the
-saved postprocessor. So the program takes the robot's frame as the robot gives it (uint8 HWC
-images, float32 state) and returns the chunk's actions in robot units, and running it needs no
-PyTorch code. The folder also gets a test case, the actions `lerobot-rollout` plays with PyTorch
-for one random frame, which the exported program replays before it runs.
+The program is one action chunk of LeRobot's own ACT, exactly what `lerobot-rollout` runs: image
+conversion, the saved preprocessor, `predict_action_chunk` trimmed to `n_action_steps`, and the saved
+postprocessor. It takes the robot's frame as the robot gives it (uint8 HWC images, float32 state) and
+returns actions in robot units. The folder also keeps a test case, which the rollout replays first.
 """
 
 import argparse

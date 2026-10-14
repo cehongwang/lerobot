@@ -16,18 +16,11 @@
 
 """The SmolVLA export recipe: what both backend scripts compile, and the folder they write.
 
-As for ACT, the compiled module is what `lerobot-rollout` runs for one action chunk, all of it LeRobot's
-own code, from the robot's frame to the actions in robot units. Two things differ from ACT:
-
-- The task text. A program cannot tokenize, so the preprocessor's text steps (the newline and the
-  tokenizer) run once here, and the program holds the task's token ids as constants. So the folder runs
-  the task it was exported for, and `export.json` marks it `task_fixed`.
-- The noise. Each chunk starts from random noise. The program takes it as its last input, so the rollout
-  draws it, and the test case gives the program the noise the PyTorch policy got.
-
-The robot's cameras and the task come from the dataset the policy was trained on, because SmolVLA's
-checkpoint only names placeholder cameras. The folder's config names the robot's cameras, so the rollout's
-camera check matches the robot without a --rename_map.
+As for ACT, the program is one action chunk of LeRobot's own SmolVLA, from the robot's frame to actions in
+robot units. A program cannot tokenize, so the task's token ids are computed here and held as constants,
+which ties the folder to that task (`task_fixed` in `export.json`). Each chunk starts from random noise,
+which the program takes as its last input. The robot's camera names and the task come from the training
+dataset, because SmolVLA's checkpoint only names placeholder cameras.
 """
 
 import argparse
@@ -89,10 +82,8 @@ class SmolVLAChunk(nn.Module):
 def load_policy(policy_path: str) -> SmolVLAPolicy:
     """The trained policy on the GPU, with its vision-language model in bfloat16.
 
-    A checkpoint fine-tuned from `--policy.type=smolvla --policy.pretrained_path=...` keeps the config default
-    `load_vlm_weights=False`, which builds the frozen vision-language model in float32 before its weights load.
-    That model is only ever run frozen in bfloat16 (`load_vlm_weights=True` loads it that way), and in float32 it
-    makes the exported chunk about twice as slow and 0.2 GB larger.
+    A checkpoint fine-tuned from `--policy.type=smolvla` keeps `load_vlm_weights=False`, which builds the frozen
+    vision-language model in float32 and makes the exported chunk about twice as slow.
     """
     config = PreTrainedConfig.from_pretrained(policy_path)
     config.load_vlm_weights = True
@@ -226,9 +217,7 @@ def parse_args(description: str, backend: str) -> argparse.Namespace:
         "--output_dir", type=Path, help="Folder to write. Default: a new one under outputs/export."
     )
     parser.add_argument("--job_name", default=f"smolvla_{backend}", help="Names the default output folder.")
-    # The backbone runs in bfloat16 and TensorRT reorders its math, so a SmolVLA engine's actions drift from
-    # PyTorch's by up to about 4 on this arm, against 13 or more for wrong noise and usually 5 or more for swapped
-    # cameras. So the check catches gross mistakes, not small ones.
+    # TensorRT reorders bfloat16 math, so actions drift by up to about 4; wrong noise gives 13 or more.
     parser.add_argument(
         "--tolerance", type=float, default=5.0, help="Largest allowed action error, robot units."
     )

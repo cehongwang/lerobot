@@ -17,23 +17,14 @@
 
 """The GR00T N1.7 export recipe: what every backend script compiles, and the folder they write.
 
-As for SmolVLA, the compiled programs are one action chunk of LeRobot's own GR00T, with the starting noise
-as the chunk's last input and the checkpoint's saved postprocessor at the end. What differs is how the
-backbone gets in. Qwen3-VL's own forward computes the rope index and the vision grid with Python loops over
-the inputs, which no exporter can follow. NVIDIA's deployment code for GR00T (Isaac-GR00T,
-scripts/deployment/export_onnx_n1d7.py) avoids them with two wrappers, ported below: the vision tower for
-one fixed image grid, and the language model with the rope positions as an input.
+The program is one action chunk of LeRobot's own GR00T, from resized uint8 HWC cameras, float32 state and
+noise to actions in robot units. Qwen3-VL computes its rope positions and image grid with Python loops no
+exporter can follow; for one task and one camera size they never change, so they are computed once here
+and held as constants, as in NVIDIA's own GR00T deployment code. The runtime resizes the cameras with
+NumPy; no tokenizer runs at inference.
 
-For one task and one camera size, everything those loops compute is the same on every frame: the token
-ids, the rope positions, and the rows the image features go to. So they are computed here, once, and held
-as constants. The runtime resizes the raw cameras with NumPy antialiased bicubic sampling, and the program
-takes the resized uint8 HWC cameras, float32 state and unbatched noise. Image normalization and patch
-packing, state normalization and action unnormalization run inside the program. The folder records the
-task it was exported for; no tokenizer runs at inference.
-
-The split routes export a chain, one part per process: vision, groups of six language layers, groups of
-eight diffusion blocks, and the actions. Only one weight group is loaded at a time. The diffusion groups
-run once per Euler step, at the checkpoint's time buckets.
+The split routes export a chain (vision, the language model in groups of six layers, the diffusion model
+in groups of eight blocks, and the actions), one part per process, so an 8 GB board can export it.
 """
 
 import argparse
