@@ -151,7 +151,7 @@ Orin Nano:
 |         | ExecuTorch-TensorRT | ONNX-TensorRT | Torch-TensorRT | `torch.compile` | PyTorch |
 | ------- | ------------------: | ------------: | -------------: | --------------: | ------: |
 | ACT     |                 219 |       **218** |            857 |            1584 |    1131 |
-| SmolVLA |                 612 |       **484** |           1725 |               - |    2397 |
+| SmolVLA |                 612 |       **484** |           1725 |            2749 |    2397 |
 | pi0.5   |                4962 |      **4893** |            OOM |             OOM |     OOM |
 | GR00T   |            **4369** |          4415 |           7703 |             OOM |     OOM |
 
