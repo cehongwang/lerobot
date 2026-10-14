@@ -56,7 +56,7 @@ python examples/export/act_torch_tensorrt.py --policy.path=outputs/train/act_so1
 | pi0.5   | [script](pi05_executorch_tensorrt.py)    | [script](pi05_onnx_tensorrt.py)    | [script](pi05_torch_tensorrt.py)    |
 | GR00T   | [script](groot_executorch_tensorrt.py)   | [script](groot_onnx_tensorrt.py)   | [script](groot_torch_tensorrt.py)   |
 
-Every ExecuTorch-TensorRT and ONNX-TensorRT script turns on CUDA graphs (the GPU records its work once and replays it), except GR00T with ONNX-TensorRT, which runs out of memory while recording them. The Torch-TensorRT scripts leave them off.
+Every ExecuTorch-TensorRT and ONNX-TensorRT script turns on CUDA graphs (the GPU records its work once and replays it), except GR00T with ONNX-TensorRT, where recording the chain of engines fails. The Torch-TensorRT scripts leave them off.
 
 SmolVLA and GR00T read the camera names and the task from the dataset they were trained on. Add `--dataset.root=<folder>` if the dataset is on your disk:
 

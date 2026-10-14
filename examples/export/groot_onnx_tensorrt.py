@@ -54,5 +54,5 @@ def compile_part(
 
 
 if __name__ == "__main__":
-    # CUDA graphs stay off: recording them for this chain of engines runs out of memory.
+    # CUDA graphs stay off: TensorRT cannot record this chain of engines in one (the capture is invalidated).
     export_parts(parse_args(__doc__, "onnx_tensorrt"), __file__, "{name}.engine", compile_part)
