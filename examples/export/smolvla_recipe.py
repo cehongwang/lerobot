@@ -43,6 +43,7 @@ from act_recipe import TEST_CASE, add_backend_args, gpu_processors, make_output_
 from safetensors.numpy import save_file
 from torch import Tensor, nn
 
+from lerobot.configs import PreTrainedConfig
 from lerobot.datasets import LeRobotDatasetMetadata
 from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy
 from lerobot.policies.utils import prepare_observation_for_inference
@@ -85,6 +86,19 @@ class SmolVLAChunk(nn.Module):
         return self.postprocessor(actions[:, : self.policy.config.n_action_steps])[0]
 
 
+def load_policy(policy_path: str) -> SmolVLAPolicy:
+    """The trained policy on the GPU, with its vision-language model in bfloat16.
+
+    A checkpoint fine-tuned from `--policy.type=smolvla --policy.pretrained_path=...` keeps the config default
+    `load_vlm_weights=False`, which builds the frozen vision-language model in float32 before its weights load.
+    That model is only ever run frozen in bfloat16 (`load_vlm_weights=True` loads it that way), and in float32 it
+    makes the exported chunk about twice as slow and 0.2 GB larger.
+    """
+    config = PreTrainedConfig.from_pretrained(policy_path)
+    config.load_vlm_weights = True
+    return SmolVLAPolicy.from_pretrained(policy_path, config=config).to("cuda").eval()
+
+
 class SmolVLAExport:
     """Loads a trained SmolVLA checkpoint, and writes the exported folder around a compiled program."""
 
@@ -92,7 +106,7 @@ class SmolVLAExport:
         self.output_dir = make_output_dir(args.output_dir, args.job_name)
         self.policy_path = args.policy_path
         self.backend, self.tolerance = args.backend, args.tolerance
-        self.policy = SmolVLAPolicy.from_pretrained(self.policy_path).to("cuda").eval()
+        self.policy = load_policy(self.policy_path)
         self.config = self.policy.config
         preprocessor, postprocessor = self.processors()
         text_steps = [

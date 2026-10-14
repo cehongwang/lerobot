@@ -186,3 +186,17 @@ def test_pi05_executorch_cuda_export_keeps_values_on_the_gpu(tmp_path, monkeypat
     )
     lowered = exir.to_edge_transform_and_lower.return_value
     lowered.to_executorch.assert_called_once_with(config=exir.ExecutorchBackendConfig.return_value)
+
+
+def test_smolvla_export_builds_the_vision_language_model_in_bfloat16(monkeypatch):
+    pytest.importorskip("transformers")
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "examples" / "export"))
+    import smolvla_recipe
+
+    # A checkpoint fine-tuned from `--policy.type=smolvla` keeps the default load_vlm_weights=False.
+    config = SimpleNamespace(load_vlm_weights=False)
+    monkeypatch.setattr(smolvla_recipe.PreTrainedConfig, "from_pretrained", MagicMock(return_value=config))
+    from_pretrained = MagicMock()
+    monkeypatch.setattr(smolvla_recipe.SmolVLAPolicy, "from_pretrained", from_pretrained)
+    smolvla_recipe.load_policy("checkpoint")
+    assert from_pretrained.call_args.kwargs["config"].load_vlm_weights is True
