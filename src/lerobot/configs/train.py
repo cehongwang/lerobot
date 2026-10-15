@@ -469,5 +469,9 @@ class TrainPipelineConfig(HubMixin):
                     json.dump(migrated_config, f)
                     config_file = f.name
 
+        # Policies load on demand, so register the ones these overrides need before draccus builds its parser.
+        from lerobot.configs.parser import load_selected_choices
+
+        load_selected_choices(cls, cli_args)
         with draccus.config_type("json"):
             return draccus.parse(cls, config_file, args=cli_args)
