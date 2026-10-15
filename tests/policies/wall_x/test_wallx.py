@@ -100,7 +100,8 @@ def _make_unloaded_policy(**config_values):
     torch.nn.Module.__init__(policy)
     config_values.setdefault("text_temperature", 0.0)
     config_values.setdefault("text_top_p", 1.0)
-    policy.config = SimpleNamespace(chunk_size=3, **config_values)
+    config_values.setdefault("chunk_size", 3)
+    policy.config = SimpleNamespace(**config_values)
     return policy
 
 
@@ -264,6 +265,10 @@ def test_policy_preserves_original_action_only_loss(monkeypatch):
     assert loss.item() == 9.0
 
 
+# Differs from the action dim (3), so a swapped noise layout changes the actions.
+DIFFUSION_CHUNK = 4
+
+
 class _TinyDiffusionModel:
     """Runs the real `Qwen2_5_VLMoEForAction.predict` diffusion path with a tiny action head."""
 
@@ -286,6 +291,7 @@ class _TinyDiffusionModel:
 
 def _make_diffusion_policy(monkeypatch):
     policy = _make_unloaded_policy(
+        chunk_size=DIFFUSION_CHUNK,
         prediction_mode="diffusion",
         max_action_dim=3,
         n_action_steps=3,
@@ -294,30 +300,40 @@ def _make_diffusion_policy(monkeypatch):
     policy.reset()
     policy.model = _TinyDiffusionModel()
     monkeypatch.setattr(policy, "_pretokenized_inputs", lambda batch, **kwargs: batch)
-    input_ids = torch.tensor([[1, 7, 7, 7, 2], [1, 7, 7, 7, 2]])
+    input_ids = torch.tensor([[1, 7, 7, 7, 7, 2], [1, 7, 7, 7, 7, 2]])
     batch = {
         "input_ids": input_ids,
-        "inputs_embeds": torch.randn(2, 5, 8),
-        "attention_mask": torch.ones(2, 5, dtype=torch.long),
-        "position_ids": torch.arange(5).expand(3, 2, 5),
-        "dof_mask": torch.ones(2, 3, 3),
+        "inputs_embeds": torch.randn(2, 6, 8),
+        "attention_mask": torch.ones(2, 6, dtype=torch.long),
+        "position_ids": torch.arange(6).expand(3, 2, 6),
+        "dof_mask": torch.ones(2, DIFFUSION_CHUNK, 3),
     }
     return policy, batch
 
 
 def test_predict_action_chunk_uses_given_noise(monkeypatch):
     policy, batch = _make_diffusion_policy(monkeypatch)
-    noise = torch.randn(2, 3, 3)
+    noise = torch.randn(2, DIFFUSION_CHUNK, 3)
     noise_before = noise.clone()
 
     actions_1 = policy.predict_action_chunk(batch, noise=noise)
     actions_2 = policy.predict_action_chunk(batch, noise=noise)
     other_actions = policy.predict_action_chunk(batch, noise=torch.randn_like(noise))
 
-    assert actions_1.shape == (2, 3, 2)
+    assert actions_1.shape == (2, DIFFUSION_CHUNK, 2)
     assert torch.equal(actions_1, actions_2)
     assert torch.equal(noise, noise_before)
     assert not torch.allclose(actions_1, other_actions)
+
+
+def test_select_action_passes_given_noise_on(monkeypatch):
+    policy, batch = _make_diffusion_policy(monkeypatch)
+    noise = torch.randn(2, DIFFUSION_CHUNK, 3)
+
+    chunk = policy.predict_action_chunk(batch, noise=noise)
+    policy.reset()
+
+    assert torch.equal(policy.select_action(batch, noise=noise), chunk[:, 0])
 
 
 def test_predict_action_chunk_default_noise_unchanged(monkeypatch):
@@ -326,7 +342,7 @@ def test_predict_action_chunk_default_noise_unchanged(monkeypatch):
     torch.manual_seed(0)
     default_actions = policy.predict_action_chunk(batch)
     torch.manual_seed(0)
-    noise = torch.randn(size=(2, 3, 3), dtype=torch.float32, device=torch.device("cpu"))
+    noise = torch.randn(size=(2, DIFFUSION_CHUNK, 3), dtype=torch.float32, device=torch.device("cpu"))
 
     assert torch.equal(default_actions, policy.predict_action_chunk(batch, noise=noise))
     # A given noise is moved to the dtype of the draw it replaces.

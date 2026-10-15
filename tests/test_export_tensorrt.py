@@ -21,7 +21,7 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-from lerobot.rollout.inference.export import tensorrt as backend
+from lerobot.inference.export import tensorrt as backend
 
 
 @pytest.fixture
@@ -214,7 +214,7 @@ def test_cuda_error_is_not_ignored():
 
 @pytest.mark.parametrize("noise_shape", [(1, 4, 3), (4, 3)])
 def test_chained_engines_share_scratch_and_keep_the_cache_on_device(tmp_path, monkeypatch, noise_shape):
-    from lerobot.rollout.inference.export.engine import ProgramChain
+    from lerobot.inference.export.engine import ProgramChain
 
     times = []
     cache = object()

@@ -166,6 +166,8 @@ _hidapi_available = is_package_available("hidapi", import_name="hid")
 _datasets_available = is_package_available("datasets")
 _pandas_available = is_package_available("pandas")
 _faker_available = is_package_available("faker")
+_msgpack_available = is_package_available("msgpack")
+_zenoh_available = is_package_available("eclipse-zenoh", import_name="zenoh")
 
 # Video encoding / decoding
 _av_available = is_package_available("av")
@@ -214,6 +216,25 @@ class ChoicesFromPolicies(ChoiceRegistryBase):
     lookup fails. It is not a `draccus.ChoiceRegistry` itself, since the registries that use it would then
     share one set of choices.
     """
+
+    # The names policy packages register, each with the package that owns it, so a plugin cannot take one
+    # before that package is imported.
+    POLICY_CHOICES = {
+        "molmoact2_adamw": "molmoact2",
+        "molmoact2_cosine_with_warmup": "molmoact2",
+        "lawam_cosine_with_min_lr": "lawam",
+    }
+
+    @classmethod
+    def register_subclass(cls, name: str, choice_type: Any = None) -> Any:
+        owner = cls.POLICY_CHOICES.get(name)
+        if (
+            choice_type is not None
+            and owner
+            and not choice_type.__module__.startswith(f"lerobot.policies.{owner}.")
+        ):
+            raise ValueError(f"'{name}' is reserved for the {owner} policy.")
+        return super().register_subclass(name, choice_type)
 
     @classmethod
     def get_choice_class(cls, name: str) -> Any:

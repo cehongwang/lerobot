@@ -178,9 +178,10 @@ def test_meta_build_draws_no_random_numbers(config):
     ],
 )
 @pytest.mark.parametrize("strict", [True, False])
-def test_other_checkpoints_load_the_regular_way(config, tmp_path, monkeypatch, edit, strict):
+def test_other_checkpoints_load_the_regular_way(config, tmp_path, monkeypatch, capsys, edit, strict):
     path = save(config, tmp_path / "ckpt", edit)
     model, used_meta = load(PI0Policy, path, config, monkeypatch, strict=strict)
+    assert "the checkpoint does not fill it exactly" in capsys.readouterr().out
     expected, _ = load(PI0Policy, path, config, monkeypatch, regular=True, strict=strict)
     assert not used_meta
     assert_same(model, expected)

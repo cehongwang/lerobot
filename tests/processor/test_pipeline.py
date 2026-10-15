@@ -1677,6 +1677,47 @@ print(ProcessorStepRegistry.get({name!r}).__name__)
     assert result.stdout.split()[-2:] == ["REJECTED", builtin]
 
 
+def test_builtin_step_table_matches_the_registry():
+    # Importing every built-in module registers every built-in step, so the table cannot drift unnoticed.
+    code = """
+import json
+from lerobot.configs.policies import PreTrainedConfig
+from lerobot.policies.groot.processor_groot import _register_removed_n1_5_step_stubs
+from lerobot.processor import __all__ as exports
+import lerobot.processor
+from lerobot.processor.pipeline import BUILTIN_STEP_MODULES, ProcessorStepRegistry
+
+for export in exports:
+    getattr(lerobot.processor, export)
+PreTrainedConfig.load_all_choices()
+_register_removed_n1_5_step_stubs()
+registered = {n: c.__module__ for n, c in ProcessorStepRegistry._registry.items()}
+print(json.dumps([registered, {n: "lerobot." + m for n, m in BUILTIN_STEP_MODULES.items()}]))
+"""
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=600)
+    assert result.returncode == 0, result.stderr
+    registered, table = json.loads(result.stdout.splitlines()[-1])
+    assert registered == table
+
+
+def test_plugin_step_registers_without_importing_torch():
+    code = """
+import sys
+from lerobot.processor.pipeline import ProcessorStep, ProcessorStepRegistry
+
+@ProcessorStepRegistry.register("plugin_custom_step")
+class PluginStep(ProcessorStep):
+    pass
+
+ProcessorStepRegistry.unregister("plugin_custom_step")
+ProcessorStepRegistry.register("plugin_custom_step")(PluginStep)
+print("TORCH", "torch" in sys.modules)
+"""
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=300)
+    assert result.returncode == 0, result.stderr
+    assert "TORCH False" in result.stdout
+
+
 def test_state_file_naming_with_registry():
     """Test state file naming for registered steps includes pipeline name, index and registry name."""
 

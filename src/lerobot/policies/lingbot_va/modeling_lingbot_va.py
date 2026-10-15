@@ -444,13 +444,12 @@ class LingBotVAPolicy(PreTrainedPolicy):
         *,
         noise: Tensor | None = None,
         video_noise: Tensor | None = None,
-        **kwargs,
     ) -> Tensor:
         """Run one autoregressive chunk and return actions ``[B, chunk_size, n_used]`` (normalized).
 
         ``noise`` is the starting action sample ``[1, action_dim, frame_chunk_size, action_per_frame, 1]``
         and ``video_noise`` the starting video latent ``[1, 48, frame_chunk_size, latent_h, latent_w]``. When
-        None, each is drawn with ``torch.randn`` as before.
+        None, each is drawn with ``torch.randn``.
         """
         self.eval()
         self._ensure_frozen_modules()
@@ -763,7 +762,9 @@ class LingBotVAPolicy(PreTrainedPolicy):
 
     # The core dual-stream denoising loop (one chunk)
     @torch.no_grad()
-    def _infer(self, init_latent, frame_st_id=0, *, noise=None, video_noise=None):
+    def _infer(
+        self, init_latent, frame_st_id=0, *, noise: Tensor | None = None, video_noise: Tensor | None = None
+    ):
         cfg = self.config
         device = self.config.device
         latent_h, latent_w = self._latent_hw

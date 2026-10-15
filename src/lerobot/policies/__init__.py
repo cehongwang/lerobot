@@ -16,12 +16,13 @@ from typing import TYPE_CHECKING
 
 from lerobot.utils.import_utils import lazy_exports
 
-# These import torch, and each config imports its policy package with the model, so each is imported
-# the first time it is used.
+# These import torch (all but ActionInterpolator), and each config imports its policy package with the model,
+# so each is imported the first time it is used.
 if TYPE_CHECKING:
     from lerobot.utils.action_interpolator import ActionInterpolator as ActionInterpolator
 
     from .act.configuration_act import ACTConfig as ACTConfig
+    from .chunk import ChunkPolicySpec, ExecutionMode, FeatureSpec
     from .diffusion.configuration_diffusion import DiffusionConfig as DiffusionConfig
     from .dm05.configuration_dm05 import DM05Config as DM05Config
     from .eo1.configuration_eo1 import EO1Config as EO1Config
@@ -40,6 +41,13 @@ if TYPE_CHECKING:
     from .pi0_fast.configuration_pi0_fast import PI0FastConfig as PI0FastConfig
     from .pi05.configuration_pi05 import PI05Config as PI05Config
     from .pretrained import PreTrainedPolicy as PreTrainedPolicy
+    from .rtc import (
+        ActionQueue,
+        QueueSnapshot,
+        RTCConfig,
+        reanchor_relative_rtc_prefix,
+        validate_trained_rtc_horizon,
+    )
     from .smolvla.configuration_smolvla import SmolVLAConfig as SmolVLAConfig
     from .tdmpc.configuration_tdmpc import TDMPCConfig as TDMPCConfig
     from .utils import make_robot_action, prepare_observation_for_inference
@@ -53,6 +61,9 @@ else:
         {
             "ActionInterpolator": "lerobot.utils.action_interpolator.ActionInterpolator",
             "ACTConfig": ".act.configuration_act.ACTConfig",
+            "ChunkPolicySpec": ".chunk.ChunkPolicySpec",
+            "ExecutionMode": ".chunk.ExecutionMode",
+            "FeatureSpec": ".chunk.FeatureSpec",
             "DiffusionConfig": ".diffusion.configuration_diffusion.DiffusionConfig",
             "DM05Config": ".dm05.configuration_dm05.DM05Config",
             "EO1Config": ".eo1.configuration_eo1.EO1Config",
@@ -74,6 +85,11 @@ else:
             "PI0FastConfig": ".pi0_fast.configuration_pi0_fast.PI0FastConfig",
             "PI05Config": ".pi05.configuration_pi05.PI05Config",
             "PreTrainedPolicy": ".pretrained.PreTrainedPolicy",
+            "ActionQueue": ".rtc.ActionQueue",
+            "QueueSnapshot": ".rtc.QueueSnapshot",
+            "RTCConfig": ".rtc.RTCConfig",
+            "reanchor_relative_rtc_prefix": ".rtc.reanchor_relative_rtc_prefix",
+            "validate_trained_rtc_horizon": ".rtc.validate_trained_rtc_horizon",
             "SmolVLAConfig": ".smolvla.configuration_smolvla.SmolVLAConfig",
             "TDMPCConfig": ".tdmpc.configuration_tdmpc.TDMPCConfig",
             "make_robot_action": ".utils.make_robot_action",
@@ -114,10 +130,19 @@ __all__ = [
     "VQBeTConfig",
     "WallXConfig",
     "XVLAConfig",
+    # Chunk execution contracts
+    "ChunkPolicySpec",
+    "ExecutionMode",
+    "FeatureSpec",
     # Base class
     "PreTrainedPolicy",
     # RTC utilities
     "ActionInterpolator",
+    "ActionQueue",
+    "QueueSnapshot",
+    "RTCConfig",
+    "reanchor_relative_rtc_prefix",
+    "validate_trained_rtc_horizon",
     # Utility functions
     "make_robot_action",
     "prepare_observation_for_inference",

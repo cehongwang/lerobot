@@ -52,7 +52,8 @@ def load_complete_checkpoint(
         return None
     try:
         checkpoint = safe_open(model_file, framework="pt", device="cpu")
-    except Exception:
+    except Exception as e:
+        print(f"Not loading weights straight into the policy: cannot open the checkpoint ({e}).")
         return None
     with checkpoint:
         with _parameters_on_meta():
@@ -76,6 +77,7 @@ def load_complete_checkpoint(
             or _shares_parameters(policy)
             or any(buffer.is_meta for buffer in policy.buffers())
         ):
+            print("Not loading weights straight into the policy: the checkpoint does not fill it exactly.")
             return None
         tensors = ((name, checkpoint.get_tensor(key)) for key, fixed in names.items() for name in fixed)
         _load_state_dict_into_meta_model(policy, tensors, config.device)

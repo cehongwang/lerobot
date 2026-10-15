@@ -129,9 +129,7 @@ class EO1Policy(PreTrainedPolicy):
         return loss, loss_dict
 
     @torch.no_grad()
-    def predict_action_chunk(
-        self, batch: dict[str, Tensor], *, noise: Tensor | None = None, **kwargs
-    ) -> Tensor:
+    def predict_action_chunk(self, batch: dict[str, Tensor], *, noise: Tensor | None = None) -> Tensor:
         """Predict a chunk of actions.
 
         `noise` is the optional starting sample of the flow, shape `(batch_size, chunk_size, max_action_dim)`.

@@ -17,7 +17,7 @@ import tracemalloc
 import numpy as np
 import pytest
 
-from lerobot.rollout.inference.export.images import _axis_weights, resize_bicubic
+from lerobot.inference.export.images import _axis_weights, resize_bicubic
 
 
 def _allocating_resize(image, size):

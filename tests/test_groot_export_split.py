@@ -36,8 +36,8 @@ def test_checkpoint_split_matches_chunk(monkeypatch, tmp_path):
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "examples" / "export"))
     from groot_recipe import GrootChunk, GrootExport, free_memory, part_names
 
+    from lerobot.inference.export.engine import ProgramChain
     from lerobot.policies.groot.modeling_groot import GrootPolicy
-    from lerobot.rollout.inference.export.engine import ProgramChain
 
     class Program:
         def __init__(self, module):
@@ -225,7 +225,7 @@ def test_language_slices_preserve_global_deepstack_indices_and_pre_norm_output(r
 def test_step_slices_and_program_chain_match_action_head(recipe, alternate, interleave):
     from transformers.feature_extraction_utils import BatchFeature
 
-    from lerobot.rollout.inference.export.engine import ProgramChain
+    from lerobot.inference.export.engine import ProgramChain
 
     torch.manual_seed(14)
     head, fixed = tiny_head(alternate, interleave), constants()
@@ -304,7 +304,7 @@ def test_diffusion_parts_export_to_onnx_and_run_as_chain(recipe, monkeypatch, tm
     onnxruntime = pytest.importorskip("onnxruntime")
     pytest.importorskip("onnxscript")
 
-    from lerobot.rollout.inference.export.engine import ProgramChain
+    from lerobot.inference.export.engine import ProgramChain
     from lerobot.utils.constants import ACTION
 
     class Prefix(torch.nn.Module):

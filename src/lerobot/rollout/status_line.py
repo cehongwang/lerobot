@@ -30,10 +30,13 @@ import threading
 import time
 from typing import IO
 
-from .inference import InferenceEngine
+from lerobot.inference import InferenceEngine
+
 from .robot_wrapper import ThreadSafeRobot
 
 REFRESH_S = 0.25
+# Inference times older than this are not shown, so a stalled or finished policy does not look healthy.
+INFERENCE_WINDOW_S = 5.0
 CLEAR_LINE = "\r\033[2K"
 
 
@@ -122,18 +125,25 @@ class StatusLine:
     def _draw_loop(self) -> None:
         while not self._stop.wait(REFRESH_S):
             # A line wider than the terminal wraps, and clearing the last row would leave the rest behind.
-            line = self._format()[: shutil.get_terminal_size().columns - 1]
+            line = self._format()[: self._columns() - 1]
             with self._lock:
                 self._stream.write(CLEAR_LINE + line)
                 self._stream.flush()
                 self._shown = True
 
+    def _columns(self) -> int:
+        # Measure the stream the line is drawn on: stdout may be redirected while this one is a terminal.
+        try:
+            return os.get_terminal_size(self._stream.fileno()).columns
+        except (AttributeError, OSError, ValueError):
+            return shutil.get_terminal_size().columns
+
     def _format(self) -> str:
         parts = []
-        # Copied in one call each, so the control thread appending meanwhile cannot change them mid-read.
         now = time.perf_counter()
+        # Copied in one call each, so another thread appending meanwhile cannot change them mid-read.
         ticks_last_second = sum(1 for tick in list(self._robot.observation_times) if now - tick <= 1.0)
-        inferences = list(self._engine.inference_seconds)
+        inferences = [s for end, s in list(self._engine.inference_times) if now - end <= INFERENCE_WINDOW_S]
         parts.append(f"loop {ticks_last_second:3d}/{self._tick_hz:g} Hz")
         if inferences:
             median, worst = statistics.median(inferences), max(inferences)

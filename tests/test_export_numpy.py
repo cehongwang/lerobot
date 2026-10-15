@@ -19,7 +19,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from lerobot.rollout.inference.export.engine import ExportInferenceEngine, load_program
+from lerobot.inference.export.engine import ExportInferenceEngine, load_program
 
 
 @pytest.mark.parametrize("noise_shape", [(1, 2, 3), (2, 3)])
@@ -226,7 +226,7 @@ def test_executorch_does_not_retry_execution_errors(tmp_path, monkeypatch, error
 
 
 def test_program_chain_invalid_step_count():
-    from lerobot.rollout.inference.export.engine import ProgramChain
+    from lerobot.inference.export.engine import ProgramChain
 
     with pytest.raises(ValueError, match="num_steps"):
         ProgramChain({}, {"num_steps": 0, "inputs": [], "programs": {}})
@@ -283,7 +283,7 @@ def test_raw_frame_engine_preserves_inputs_noise_and_action_queue(
 ):
     from safetensors.numpy import save_file
 
-    from lerobot.rollout.inference.export import engine as module
+    from lerobot.inference.export import engine as module
 
     state = np.array([1, 2, 3], dtype=np.float32)
     image = np.arange(24, dtype=np.uint8).reshape(2, 4, 3)
@@ -343,7 +343,7 @@ def test_raw_frame_engine_preserves_inputs_noise_and_action_queue(
 def test_legacy_text_pipeline_keeps_state_not_listed_as_program_input(tmp_path, monkeypatch):
     from safetensors.numpy import save_file
 
-    from lerobot.rollout.inference.export import engine as module
+    from lerobot.inference.export import engine as module
 
     state = np.array([1, 2], dtype=np.float32)
     (tmp_path / "export.json").write_text(
@@ -384,7 +384,7 @@ def test_device_resident_chain_passes_cuda_tensors_between_programs(
     passes torch tensors between programs.
     """
     torch = pytest.importorskip("torch")
-    from lerobot.rollout.inference.export import executorch
+    from lerobot.inference.export import executorch
 
     class DLPackOnly:
         def __init__(self, tensor):

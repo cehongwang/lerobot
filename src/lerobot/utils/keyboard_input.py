@@ -161,14 +161,14 @@ def apply_recording_control(control: str, events: dict) -> None:
     (re-record the last episode), or ``"esc"`` (stop recording).
     """
     if control == "right":
-        logger.info("Right arrow key pressed. Exiting loop...")
+        print("Right arrow key pressed. Exiting loop...")
         events["exit_early"] = True
     elif control == "left":
-        logger.info("Left arrow key pressed. Exiting loop and rerecord the last episode...")
+        print("Left arrow key pressed. Exiting loop and rerecord the last episode...")
         events["rerecord_episode"] = True
         events["exit_early"] = True
     elif control == "esc":
-        logger.info("Escape key pressed. Stopping data recording...")
+        print("Escape key pressed. Stopping data recording...")
         events["stop_recording"] = True
         events["exit_early"] = True
 

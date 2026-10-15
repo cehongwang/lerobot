@@ -648,7 +648,7 @@ def test_evo1_predict_action_chunk_uses_given_noise(monkeypatch):
     monkeypatch.setattr(evo1_model, "InternVL3Embedder", FixedTokenEmbedder)
     policy = modeling_evo1.Evo1Policy(make_config())
     batch = make_batch(include_action=False)
-    noise = torch.rand(2, CHUNK_SIZE * MAX_ACTION_DIM) * 2 - 1
+    noise = torch.rand(2, CHUNK_SIZE, MAX_ACTION_DIM) * 2 - 1
     noise_before = noise.clone()
 
     actions_1 = policy.predict_action_chunk(batch, noise=noise)
@@ -661,6 +661,18 @@ def test_evo1_predict_action_chunk_uses_given_noise(monkeypatch):
     assert not torch.allclose(actions_1, other_actions)
 
 
+def test_evo1_select_action_passes_given_noise_on(monkeypatch):
+    monkeypatch.setattr(evo1_model, "InternVL3Embedder", FixedTokenEmbedder)
+    policy = modeling_evo1.Evo1Policy(make_config())
+    batch = make_batch(include_action=False)
+    noise = torch.rand(2, CHUNK_SIZE, MAX_ACTION_DIM) * 2 - 1
+
+    chunk = policy.predict_action_chunk(batch, noise=noise)
+    policy.reset()
+
+    assert torch.equal(policy.select_action(batch, noise=noise), chunk[:, 0])
+
+
 def test_evo1_predict_action_chunk_default_noise_unchanged(monkeypatch):
     monkeypatch.setattr(evo1_model, "InternVL3Embedder", FixedTokenEmbedder)
     policy = modeling_evo1.Evo1Policy(make_config())
@@ -669,9 +681,12 @@ def test_evo1_predict_action_chunk_default_noise_unchanged(monkeypatch):
     torch.manual_seed(0)
     default_actions = policy.predict_action_chunk(batch)
     torch.manual_seed(0)
-    noise = torch.rand(2, CHUNK_SIZE * MAX_ACTION_DIM, dtype=torch.float32) * 2 - 1
+    noise = torch.rand(2, CHUNK_SIZE, MAX_ACTION_DIM, dtype=torch.float32) * 2 - 1
 
     assert torch.equal(default_actions, policy.predict_action_chunk(batch, noise=noise))
+    # A noise in another layout with the same number of values is an error, not a silent reshape.
+    with pytest.raises(ValueError, match="noise must have shape"):
+        policy.predict_action_chunk(batch, noise=noise.transpose(1, 2).contiguous())
     # A given noise is moved to the dtype of the draw it replaces.
     assert torch.equal(default_actions, policy.predict_action_chunk(batch, noise=noise.double()))
 

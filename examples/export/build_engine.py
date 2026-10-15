@@ -36,7 +36,7 @@ from act_recipe import EXPORTED_PROGRAM
 from executorch.exir import ExecutorchBackendConfig
 from executorch.exir.passes import MemoryPlanningPass
 
-from lerobot.rollout.inference.export import ExportInferenceEngine
+from lerobot.inference.export import ExportInferenceEngine
 
 GIB = 1 << 30
 

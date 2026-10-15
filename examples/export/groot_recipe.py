@@ -50,12 +50,12 @@ from transformers.utils import cached_file
 
 from lerobot.configs import PreTrainedConfig
 from lerobot.datasets import LeRobotDatasetMetadata
+from lerobot.inference.export.images import resize_images
 from lerobot.policies.groot.groot_n1_7 import CategorySpecificLinear, GR00TN17Config
 from lerobot.policies.groot.modeling_groot import GrootPolicy
 from lerobot.policies.groot.processor_groot import GrootN17PackInputsStep, GrootN17VLMEncodeStep
 from lerobot.policies.utils import prepare_observation_for_inference
 from lerobot.processor import PolicyProcessorPipeline
-from lerobot.rollout.inference.export.images import resize_images
 from lerobot.utils.constants import ACTION, OBS_IMAGES, OBS_STATE
 from lerobot.utils.feature_utils import dataset_to_policy_features
 

@@ -27,10 +27,9 @@ import draccus
 
 from lerobot.configs import FeatureType, PolicyFeature, PreTrainedConfig, parser
 from lerobot.configs.dataset import DatasetRecordConfig
+from lerobot.inference import InferenceEngineConfig, RemoteInferenceConfig, SyncInferenceConfig
 from lerobot.robots.config import RobotConfig
 from lerobot.teleoperators.config import TeleoperatorConfig
-
-from .inference import InferenceEngineConfig, SyncInferenceConfig
 
 logger = logging.getLogger(__name__)
 
@@ -313,7 +312,7 @@ class RolloutConfig:
     # or any name registered by a third-party package)
     strategy: RolloutStrategyConfig = field(default_factory=BaseStrategyConfig)
 
-    # Inference backend (polymorphic: --inference.type=sync|rtc)
+    # Inference backend (polymorphic: --inference.type=sync|rtc|remote)
     inference: InferenceEngineConfig = field(default_factory=SyncInferenceConfig)
 
     # Dataset (required, optional or rejected according to the strategy's ``dataset_mode``)
@@ -421,6 +420,13 @@ class RolloutConfig:
             raise ValueError("--robot.type is required for rollout")
 
         policy_path = parser.get_path_arg("policy")
+        remote = isinstance(self.inference, RemoteInferenceConfig)
+        if remote and (
+            policy_path or self.policy is not None or self.device is not None or self.use_torch_compile
+        ):
+            raise ValueError(
+                "Remote inference owns policy/device configuration; omit --policy, --device and --use_torch_compile"
+            )
         if policy_path:
             yaml_overrides = parser.get_yaml_overrides("policy")
             cli_overrides = parser.get_cli_overrides("policy") or []
@@ -428,7 +434,7 @@ class RolloutConfig:
             pretrained_revision = parser.parse_arg("pretrained_revision", cli_overrides)
             if pretrained_revision is None:
                 pretrained_revision = parser.parse_arg("pretrained_revision", yaml_overrides)
-            from .inference.export import export_dir
+            from lerobot.inference.export import export_dir
 
             if export_dir(policy_path) is not None:
                 if policy_overrides:
@@ -441,7 +447,7 @@ class RolloutConfig:
                     cli_overrides=policy_overrides,
                 )
             self.policy.pretrained_path = policy_path
-        if self.policy is None:
+        if self.policy is None and not remote:
             raise ValueError("--policy.path is required for rollout")
 
         # --- Task resolution ---
@@ -459,6 +465,8 @@ class RolloutConfig:
         # Resolve device from the policy config when not explicitly set so all
         # components (policy.to, preprocessor, inference engine) use the same
         # device string instead of inconsistent fallbacks.
+        if remote:
+            return
         if isinstance(self.policy, ExportPolicyConfig):
             self.device = self.device or self.policy.device
             return

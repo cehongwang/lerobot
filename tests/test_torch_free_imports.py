@@ -72,20 +72,13 @@ if attempts:
         "lerobot.scripts.lerobot_teleoperate",
         "lerobot.configs",
         "lerobot.policies",
+        "lerobot.inference",
         "lerobot.processor",
         "lerobot.utils.action_interpolator",
-        "lerobot.rollout.inference.export.tensorrt",
-        *(
-            pytest.param(
-                module, marks=pytest.mark.skipif(not _datasets_available, reason="datasets not installed")
-            )
-            for module in [
-                "lerobot.scripts.lerobot_rollout",
-                "lerobot.datasets",
-                "lerobot.datasets.pipeline_features",
-                "lerobot.rollout.ring_buffer",
-                "lerobot.rollout.status_line",
-            ]
+        "lerobot.inference.export.tensorrt",
+        pytest.param(
+            "lerobot.scripts.lerobot_rollout",
+            marks=pytest.mark.skipif(not _datasets_available, reason="datasets not installed"),
         ),
     ],
 )
@@ -111,7 +104,7 @@ from safetensors.numpy import save_file
 
 from lerobot.configs import parser
 from lerobot.rollout.configs import RolloutConfig
-from lerobot.rollout.inference.export import ExportInferenceEngine
+from lerobot.inference.export import ExportInferenceEngine
 from lerobot.robots.config import RobotConfig
 
 folder = Path(sys.argv[1])

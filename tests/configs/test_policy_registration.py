@@ -124,6 +124,21 @@ def test_override_with_type_from_a_config_directory(tmp_path):
     assert "POLICY ACTConfig cpu" in result.stdout
 
 
+def test_saved_train_config_with_a_policy_override(tmp_path):
+    (tmp_path / "train_config.json").write_text(
+        json.dumps({"dataset": {"repo_id": "u/d"}, "policy": {"type": "act", "push_to_hub": False}})
+    )
+    code = """
+import sys
+from lerobot.configs.train import TrainPipelineConfig
+config = TrainPipelineConfig.from_pretrained(sys.argv[1], cli_args=["--policy.chunk_size=200"])
+print("POLICY", type(config.policy).__name__, config.policy.chunk_size)
+"""
+    result = run_python(code, str(tmp_path))
+    assert result.returncode == 0, result.stderr
+    assert "POLICY ACTConfig 200" in result.stdout
+
+
 def test_optimizer_registered_by_another_policy():
     result = run_train_parse(
         "--policy.type=act",
@@ -236,12 +251,60 @@ def test_nested_policy_type(args):
     assert "NESTED ACTConfig" in result.stdout
 
 
+def test_policy_inside_a_plain_nested_config():
+    code = """
+import sys
+from dataclasses import dataclass, field
+from lerobot.configs import parser
+from lerobot.configs.policies import PreTrainedConfig
+
+@dataclass
+class Worker:
+    policy: PreTrainedConfig | None = None
+
+@dataclass
+class Root:
+    worker: Worker = field(default_factory=Worker)
+
+@parser.wrap()
+def main(cfg: Root):
+    print("NESTED", type(cfg.worker.policy).__name__)
+
+sys.argv = ["prog", *sys.argv[1:]]
+main()
+"""
+    result = run_python(code, "--worker.policy.type=act")
+    assert result.returncode == 0, result.stderr
+    assert "NESTED ACTConfig" in result.stdout
+
+
 def test_policy_class_resolves_in_a_fresh_process():
     result = run_python(
         "from lerobot.policies.factory import get_policy_class; print(get_policy_class('act').__name__)"
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.split()[-1] == "ACTPolicy"
+
+
+def test_plugin_cannot_take_an_optimizer_name_a_policy_owns():
+    code = """
+from dataclasses import dataclass
+from lerobot.optim.optimizers import OptimizerConfig
+
+try:
+    @OptimizerConfig.register_subclass("molmoact2_adamw")
+    @dataclass
+    class PluginOptimizer(OptimizerConfig):
+        def build(self, params):
+            return None
+except ValueError:
+    print("REJECTED")
+print("OWNER", OptimizerConfig.get_choice_class("molmoact2_adamw").__module__)
+"""
+    result = run_python(code)
+    assert result.returncode == 0, result.stderr
+    assert "REJECTED" in result.stdout
+    assert "OWNER lerobot.policies.molmoact2." in result.stdout
 
 
 def test_plugin_cannot_take_a_builtin_policy_name():

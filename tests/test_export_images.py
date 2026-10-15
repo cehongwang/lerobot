@@ -18,8 +18,8 @@ import numpy as np
 import pytest
 from safetensors.numpy import save_file
 
-from lerobot.rollout.inference.export import engine as module
-from lerobot.rollout.inference.export.images import resize_bicubic, resize_images
+from lerobot.inference.export import engine as module
+from lerobot.inference.export.images import resize_bicubic, resize_images
 
 
 @pytest.mark.parametrize("size", [(3, 5), (15, 21), (1, 1), (7, 11)])

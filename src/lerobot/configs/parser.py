@@ -229,13 +229,11 @@ def load_selected_choices(config_class: type, cli_args: Sequence[str]) -> None:
     accept the flags."""
     hints = get_type_hints(config_class)
     load_all = any(arg in ("--help", "-h") or re.match(r"--\w+\.[\w.]+\.type(=|$)", arg) for arg in cli_args)
-    lazy_registries = []
     for field in dataclasses.fields(config_class):
         types = [
             t for t in get_args(hints[field.name]) or (hints[field.name],) if draccus.utils.is_choice_type(t)
         ]
         lazy = [t for t in types if hasattr(t, "load_all_choices")]
-        lazy_registries += lazy
         if not types or get_path_arg(field.name, cli_args):
             continue
         names = get_type_args(field.name, cli_args)
@@ -246,8 +244,21 @@ def load_selected_choices(config_class: type, cli_args: Sequence[str]) -> None:
         if not names and lazy and any(arg.startswith(f"--{field.name}.") for arg in cli_args):
             load_all = True
     if load_all:
-        for registry in lazy_registries:
+        for registry in _lazy_registries(config_class):
             registry.load_all_choices()
+
+
+def _lazy_registries(config_class: type) -> set[Any]:
+    """The on-demand registries of the config's choice fields, including those in nested dataclasses."""
+    registries = set()
+    for field_type in get_type_hints(config_class).values():
+        for candidate in get_args(field_type) or (field_type,):
+            if draccus.utils.is_choice_type(candidate):
+                if hasattr(candidate, "load_all_choices"):
+                    registries.add(candidate)
+            elif isinstance(candidate, type) and dataclasses.is_dataclass(candidate):
+                registries |= _lazy_registries(candidate)
+    return registries
 
 
 def _register_scoped_actions(

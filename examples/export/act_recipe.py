@@ -35,10 +35,10 @@ from safetensors.numpy import save_file
 from torch import Tensor, nn
 
 from lerobot.configs.policies import PreTrainedConfig
+from lerobot.inference import SyncInferenceEngine
 from lerobot.policies.act.modeling_act import ACTPolicy
 from lerobot.policies.factory import make_pre_post_processors
 from lerobot.processor import PolicyProcessorPipeline
-from lerobot.rollout.inference import SyncInferenceEngine
 from lerobot.utils.constants import ACTION
 
 TEST_CASE = "test_case.safetensors"

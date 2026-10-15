@@ -3140,8 +3140,9 @@ class MolmoAct2Model(MolmoAct2PreTrainedModel):
                 dtype=trajectory_dtype,
                 generator=generator,
             )
+        # The CUDA graph buffer reuses these strides, so an expanded noise has to be made contiguous.
         trajectory = self._mask_action_dim_tensor(
-            noise.to(device=device, dtype=trajectory_dtype),
+            noise.to(device=device, dtype=trajectory_dtype).contiguous(),
             action_dim_is_pad=action_dim_is_pad,
             enabled=self.config.mask_action_dim_padding,
         )

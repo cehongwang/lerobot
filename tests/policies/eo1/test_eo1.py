@@ -257,6 +257,21 @@ def test_lerobot_eo1_predict_action_chunk_uses_given_noise(monkeypatch):
     assert not torch.allclose(actions_1, other_actions)
 
 
+def test_lerobot_eo1_select_action_passes_given_noise_on(monkeypatch):
+    monkeypatch.setattr(
+        "lerobot.policies.eo1.modeling_eo1.Qwen2_5_VLForConditionalGeneration.from_pretrained",
+        lambda *args, **kwargs: DummyVLMBackbone(HIDDEN_SIZE),
+    )
+    policy = EO1Policy(make_eo1_config())
+    batch = make_policy_batch(include_action=False)
+    noise = torch.randn(1, CHUNK_SIZE, MAX_ACTION_DIM)
+
+    chunk = policy.predict_action_chunk(batch, noise=noise)
+    policy.reset()
+
+    assert torch.equal(policy.select_action(batch, noise=noise), chunk[:, 0])
+
+
 def test_lerobot_eo1_predict_action_chunk_default_noise_unchanged(monkeypatch):
     monkeypatch.setattr(
         "lerobot.policies.eo1.modeling_eo1.Qwen2_5_VLForConditionalGeneration.from_pretrained",
@@ -271,6 +286,11 @@ def test_lerobot_eo1_predict_action_chunk_default_noise_unchanged(monkeypatch):
     noise = policy.model.sample_noise((1, CHUNK_SIZE, MAX_ACTION_DIM), torch.device("cpu"))
 
     assert torch.equal(default_actions, policy.predict_action_chunk(batch, noise=noise))
+    # A misspelled keyword is an error, not a silent fresh draw.
+    with pytest.raises(TypeError):
+        policy.predict_action_chunk(batch, noize=noise)
+    # A given noise is moved to the dtype of the draw it replaces.
+    assert torch.equal(default_actions, policy.predict_action_chunk(batch, noise=noise.double()))
 
 
 def test_lerobot_eo1_joint_text_and_action_supervision(monkeypatch):

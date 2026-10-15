@@ -525,8 +525,11 @@ class Flux3Policy(PreTrainedPolicy):
         device = cond["x_video_cond"].device
         n_pred = self.packer.predicted_latent_frames(cfg)
         rng = torch.Generator().manual_seed(seed)
+        # Draw both samples in their usual order, so passing one of them leaves the other unchanged.
+        drawn_video = torch.randn(1, packing.LATENT_CHANNELS, n_pred, *cfg.latent_hw, generator=rng)
+        drawn_action = torch.randn(1, cfg.action_dim, cfg.chunk_size, generator=rng)
         if video_noise is None:
-            video_noise = torch.randn(1, packing.LATENT_CHANNELS, n_pred, *cfg.latent_hw, generator=rng)
+            video_noise = drawn_video
         else:
             video_noise = video_noise.to(device=device, dtype=torch.float32)
         x_video, x_video_ids = batched_prc_vid(
@@ -535,7 +538,7 @@ class Flux3Policy(PreTrainedPolicy):
         )
         times = self.packer.action_times(cfg, 1)
         if action_noise is None:
-            action_noise = torch.randn(1, cfg.action_dim, cfg.chunk_size, generator=rng)
+            action_noise = drawn_action
         else:
             action_noise = action_noise.to(device=device, dtype=torch.float32)
         x_action, x_action_ids = batched_prc_audio(action_noise, times_to_ids(times))
@@ -604,9 +607,7 @@ class Flux3Policy(PreTrainedPolicy):
 
         ``noise`` is the starting action sample ``(B, action_dim, chunk_size)`` and ``video_noise`` the
         starting video latent ``(B, 96, n_pred, *latent_hw)``, where ``n_pred`` is the number of predicted
-        latent frames. When None, each is drawn as before from a CPU generator seeded with ``inference_seed``.
-        That generator draws the video sample first, so passing only ``video_noise`` also changes the drawn
-        action sample.
+        latent frames. When None, each is drawn from a CPU generator seeded with ``inference_seed``.
         """
         if kwargs:
             raise NotImplementedError("flux3 does not implement RTC inference arguments yet")

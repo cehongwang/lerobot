@@ -489,7 +489,7 @@ class Evo1Policy(PreTrainedPolicy):
         """Predict a chunk of actions.
 
         `noise` is the optional starting sample of the flow, shape
-        `(batch_size, chunk_size * max_action_dim)`. When it is None, it is drawn uniformly from [-1, 1).
+        `(batch_size, chunk_size, max_action_dim)`. When it is None, it is drawn uniformly from [-1, 1).
         """
         inference_delay = kwargs.get("inference_delay")
         prev_chunk_left_over = kwargs.get("prev_chunk_left_over")

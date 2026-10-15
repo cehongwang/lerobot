@@ -102,8 +102,7 @@ def test_matches_regular_load_on_cuda(config, tmp_path, monkeypatch):
 
 
 def test_incomplete_checkpoint_loads_the_regular_way(config, tmp_path, monkeypatch):
-    edit = lambda sd: sd.pop("paligemma_with_expert.paligemma.model.multi_modal_projector.linear.bias")  # noqa: E731
-    path = save_checkpoint(PI0FastPolicy, config, tmp_path / "ckpt", edit=edit)
+    path = save_checkpoint(PI0FastPolicy, config, tmp_path / "ckpt", edit=drop_projector_bias)
     model, used_meta = load(PI0FastPolicy, path, config, monkeypatch, strict=False)
     expected, _ = load(PI0FastPolicy, path, config, monkeypatch, regular=True, strict=False)
     assert not used_meta

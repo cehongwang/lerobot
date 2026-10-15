@@ -27,6 +27,7 @@ import dataclasses
 import logging
 import os
 from collections import deque
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar, Unpack
 
@@ -41,6 +42,7 @@ from lerobot.configs import FeatureType, PolicyFeature, PreTrainedConfig
 from lerobot.utils.constants import ACTION, OBS_IMAGES
 from lerobot.utils.import_utils import _transformers_available, require_package
 
+from ..chunk import ChunkPolicySpec
 from ..common.openpi_checkpoint import _drop_unloaded
 from ..pretrained import PreTrainedPolicy, RTCActionSelectKwargs, _parameters_on_meta
 from ..utils import get_device_from_parameters
@@ -146,8 +148,8 @@ class GrootPolicy(PreTrainedPolicy):
     def _build_groot_model_from_checkpoint(cls, config: GrootConfig, model_file: str) -> GR00TN17 | None:
         """Build GR00T from a fine-tuned checkpoint without downloading or loading NVIDIA's base weights.
 
-        Reads config files only. Returns None when this cannot give the regular path's exact result, so the
-        caller loads the checkpoint the regular way.
+        Reads only NVIDIA's config files. Returns None when this cannot give the regular path's exact result, so
+        the caller loads the checkpoint the regular way.
         """
         require_package("transformers", extra="groot")
         if config.device is None:
@@ -163,8 +165,8 @@ class GrootPolicy(PreTrainedPolicy):
             state_dict = {key.removeprefix(prefix): checkpoint.get_tensor(key) for key in keys}
             lm_head, embedding = _TIED_WEIGHT_NAMES
             if lm_head in state_dict and embedding in state_dict:
-                # A save keeps one name of a tied pair. With both, the regular load reports the second as
-                # unexpected and keeps the first, while from_pretrained would tie them the other way.
+                # A save keeps one name of a tied pair. With both, the regular load reports the embedding as
+                # unexpected (strict=False keeps lm_head), while the tie below would keep the embedding.
                 logger.info("Checkpoint holds both tied weight names; loading the base weights first.")
                 return None
             if lm_head in state_dict:
@@ -355,7 +357,7 @@ class GrootPolicy(PreTrainedPolicy):
         if is_finetuned_checkpoint:
             logger.info("Detected fine-tuned LeRobot checkpoint, loading with state dict...")
             if force_download:
-                # The regular load below downloads the files again once, as it did before.
+                # The regular load below passes force_download on, as it did before.
                 logger.info("force_download is set, so the checkpoint loads the regular way.")
             elif cls is GrootPolicy:
                 if config is None:
@@ -459,10 +461,23 @@ class GrootPolicy(PreTrainedPolicy):
             horizons.append(execution_horizon)
         return min(horizons)
 
-    def _resolve_prediction_horizon(self, actions: Tensor) -> int:
-        """Return the policy-facing action horizon for a native GR00T prediction."""
+    def chunk_inference_spec(self) -> ChunkPolicySpec:
+        """Declare the native wrapper's cropped prediction and playback horizons."""
+        spec = super().chunk_inference_spec()
+        native_horizon = getattr(self._groot_model.config, "action_horizon", None)
+        if not isinstance(native_horizon, int) or native_horizon <= 0:
+            raise ValueError("GR00T chunk serving requires a positive native action_horizon.")
+        prediction_steps = self._bound_prediction_horizon(native_horizon)
+        return replace(
+            spec,
+            prediction_steps=prediction_steps,
+            execution_steps=min(prediction_steps, self._resolve_action_queue_steps()),
+        )
 
-        horizons = [actions.shape[1]]
+    def _bound_prediction_horizon(self, available_steps: int) -> int:
+        """Apply the same checkpoint and playback bounds before and after inference."""
+
+        horizons = [available_steps]
         checkpoint_action_horizon = infer_groot_n1_7_action_horizon(
             self.config.base_model_path,
             self.config.embodiment_tag,
@@ -476,6 +491,10 @@ class GrootPolicy(PreTrainedPolicy):
                 horizons.append(horizon)
 
         return max(1, min(horizons))
+
+    def _resolve_prediction_horizon(self, actions: Tensor) -> int:
+        """Return the policy-facing action horizon for a native GR00T prediction."""
+        return self._bound_prediction_horizon(actions.shape[1])
 
     def _filter_groot_inputs(self, batch: dict[str, Tensor], *, include_action: bool) -> dict[str, Tensor]:
         allowed_base = {"state", "state_mask", "action_mask", "embodiment_id"}

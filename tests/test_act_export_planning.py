@@ -50,7 +50,7 @@ def test_executorch_export_shares_host_inputs_only(tmp_path, monkeypatch, deferr
             EXPORTED_PROGRAM="model.pt2",
         ),
         "tensorrt": SimpleNamespace(IStreamWriter=object),
-        "lerobot.rollout.inference.export": SimpleNamespace(ExportInferenceEngine=MagicMock()),
+        "lerobot.inference.export": SimpleNamespace(ExportInferenceEngine=MagicMock()),
     }
     for name, module in modules.items():
         monkeypatch.setitem(sys.modules, name, module)

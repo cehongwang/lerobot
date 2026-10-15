@@ -169,7 +169,9 @@ def _record_builds(monkeypatch):
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
 def test_finetune_matches_regular_load_without_base_weights(tmp_path, monkeypatch, dtype):
     base, finetune = _save_finetune(tmp_path, dtype=dtype)
-    expected = _tensors(_load_regular(finetune, monkeypatch))
+    regular = _load_regular(finetune, monkeypatch)
+    assert regular._groot_model.action_head.num_inference_timesteps == 3
+    expected = _tensors(regular)
 
     (base / "model.safetensors").unlink()
     policy = GrootPolicy.from_pretrained(finetune)
@@ -231,6 +233,22 @@ def test_force_download_downloads_once_and_loads_the_regular_way(tmp_path, monke
     assert "force_download is set" in caplog.text
 
 
+def test_wrong_sized_checkpoint_loads_the_regular_way(tmp_path, monkeypatch, caplog):
+    base, finetune = _save_finetune(tmp_path)
+    from safetensors.torch import load_file, save_file
+
+    weights = load_file(finetune / "model.safetensors")
+    key = next(k for k in weights if "action_head" in k and weights[k].dim() == 2)
+    weights[key] = torch.cat([weights[key], weights[key][:1]])
+    save_file(weights, finetune / "model.safetensors")
+    built = _record_builds(monkeypatch)
+
+    with caplog.at_level(logging.INFO), pytest.raises(RuntimeError, match="size mismatch"):
+        GrootPolicy.from_pretrained(finetune)
+    assert built == [None, str(base)]
+    assert "keys or shapes differ" in caplog.text
+
+
 def test_mismatched_checkpoint_loads_the_regular_way(tmp_path, monkeypatch, caplog):
     base, finetune = _save_finetune(tmp_path)
     from safetensors.torch import load_file, save_file
@@ -252,7 +270,7 @@ def test_checkpoint_with_both_tied_names_loads_the_regular_way(tmp_path, monkeyp
     from safetensors.torch import load_file, save_file
 
     weights = load_file(finetune / "model.safetensors")
-    lm_head = weights["_groot_model.backbone.model.lm_head.weight"]
+    lm_head = weights["_groot_model.backbone.model.lm_head.weight"].clone()
     weights["_groot_model.backbone.model.model.language_model.embed_tokens.weight"] = lm_head + 1
     save_file(weights, finetune / "model.safetensors")
     built = _record_builds(monkeypatch)
