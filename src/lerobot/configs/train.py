@@ -35,7 +35,8 @@ from lerobot.utils.hub import HubMixin, find_latest_hub_checkpoint
 from lerobot.utils.sample_weighting import SampleWeightingConfig
 
 from . import parser
-from .default import DatasetConfig, EMAConfig, EvalConfig, JobConfig, PeftConfig, WandBConfig
+from .default import DatasetConfig, EMAConfig, EvalConfig, PeftConfig, WandBConfig
+from .job import JobConfig
 from .policies import PreTrainedConfig
 from .rewards import RewardModelConfig
 

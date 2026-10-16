@@ -31,6 +31,8 @@ from lerobot.inference import InferenceEngineConfig, RemoteInferenceConfig, Sync
 from lerobot.robots.config import RobotConfig
 from lerobot.teleoperators.config import TeleoperatorConfig
 
+from .planner import PlannerConfig
+
 logger = logging.getLogger(__name__)
 
 
@@ -314,6 +316,7 @@ class RolloutConfig:
 
     # Inference backend (polymorphic: --inference.type=sync|rtc|remote)
     inference: InferenceEngineConfig = field(default_factory=SyncInferenceConfig)
+    planner: PlannerConfig | None = None
 
     # Dataset (required, optional or rejected according to the strategy's ``dataset_mode``)
     dataset: DatasetRecordConfig | None = None

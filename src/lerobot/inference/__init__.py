@@ -18,7 +18,14 @@ from typing import TYPE_CHECKING
 
 from lerobot.utils.import_utils import lazy_exports
 
-from .base import InferenceEngine, InferenceRobot, PolicyQuery, QueryAnswer
+from .base import (
+    EXTERNAL_HISTORY_DEFAULT,
+    InferenceEngine,
+    InferenceRobot,
+    PlannerReply,
+    PolicyQuery,
+    QueryAnswer,
+)
 from .chunk_settings import chunk_settings
 from .contracts import (
     DEFAULT_MAX_TEXT_INPUT_CHARS,
@@ -75,6 +82,7 @@ else:
 __all__ = [
     "DEFAULT_MAX_TEXT_INPUT_CHARS",
     "DEFAULT_MAX_TEXT_OUTPUT_CHARS",
+    "EXTERNAL_HISTORY_DEFAULT",
     "ActionChunk",
     "ActionProvenance",
     "ChunkPolicySpec",
@@ -88,6 +96,7 @@ __all__ = [
     "InferenceEngineConfig",
     "InferenceRobot",
     "ObservationSnapshot",
+    "PlannerReply",
     "PolicyCapabilities",
     "PolicyQuery",
     "PolicyRunner",

@@ -423,6 +423,15 @@ lerobot-policy-server="lerobot.scripts.lerobot_policy_server:main"
 # version wherever an extension with a .cu source is built (CuRobo does; pytorch3d compiles
 # CPU-only here because the image sets no FORCE_CUDA).
 
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+# LeRobot decodes videos on CPU; avoid GPU-only TorchCodec dependencies without changing GPU training.
+torchcodec = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux' and (platform_machine == 'x86_64' or platform_machine == 'AMD64')" }]
+
 [tool.setuptools.package-data]
 lerobot = ["envs/*.json", "annotations/steerable_pipeline/prompts/*.txt", "configs/recipes/*.yaml"]
 

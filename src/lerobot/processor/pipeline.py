@@ -103,6 +103,7 @@ BUILTIN_STEP_MODULES = {
     "molmoact2_masked_unnormalizer": "policies.molmoact2.processor_molmoact2",
     "molmoact2_pack_inputs": "policies.molmoact2.processor_molmoact2",
     "molmoact2_state_frame_transform": "policies.molmoact2.processor_molmoact2",
+    "multi_task_dit_task_tokenizer": "policies.multi_task_dit.processor_multi_task_dit",
     "pi0_new_line_processor": "policies.pi0.processor_pi0",
     "pi05_prepare_state_tokenizer_processor_step": "policies.pi05.processor_pi05",
     "pi0_fast_prepare_state_tokenizer_processor_step": "policies.pi0_fast.processor_pi0_fast",
