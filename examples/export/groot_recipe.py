@@ -354,13 +354,28 @@ def select_embodiment(module: nn.Module, embodiment_id: Tensor) -> None:
 
 
 class GrootLanguageModel(nn.Module):
-    """Some language model layers; the first group inserts the image features, the last runs the action head's encoders."""
+    """Some language model layers; the first group inserts the image features, the last runs the action head's encoders.
 
-    def __init__(self, text_model, action_head, constants: dict, start: int, stop: int, use_bf16: bool):
+    The program takes only what its layers read: the hidden states, the deepstack features added in its layer range,
+    and, in the last group, the robot state. An input a program never reads would still be a program input the GPU
+    cannot own, since an ExecuTorch export places an input on the device only when the device's backend reads it.
+    """
+
+    def __init__(
+        self,
+        text_model,
+        action_head,
+        constants: dict,
+        start: int,
+        stop: int,
+        use_bf16: bool,
+        num_deepstack: int,
+    ):
         super().__init__()
         if not 0 <= start < stop <= len(text_model.layers):
             raise ValueError("Invalid language model layer range.")
         self.start, self.last = start, stop == len(text_model.layers)
+        self.deepstack_layers = list(range(start, min(stop, num_deepstack)))
         self.layers = nn.ModuleList(text_model.layers[start:stop])
         self.rotary_emb = text_model.rotary_emb
         self.use_bf16 = use_bf16
@@ -376,7 +391,10 @@ class GrootLanguageModel(nn.Module):
             self.register_buffer("embodiment_id", torch.zeros_like(constants["embodiment_id"]))
             select_embodiment(self.state_encoder, constants["embodiment_id"])
 
-    def forward(self, hidden: Tensor, state: Tensor, *deepstack: Tensor):
+    def forward(self, hidden: Tensor, *inputs: Tensor):
+        """`inputs` holds the deepstack features this layer range adds, in layer order, then the state in the last group."""
+        added = len(self.deepstack_layers)
+        deepstack = dict(zip(self.deepstack_layers, inputs[:added], strict=True))
         with torch.autocast(hidden.device.type, torch.bfloat16, enabled=self.use_bf16):
             if self.start == 0:
                 hidden = self.text_embeds.masked_scatter(
@@ -394,11 +412,12 @@ class GrootLanguageModel(nn.Module):
                     past_key_values=None,
                     position_embeddings=positions,
                 )
-                if index < len(deepstack):
+                if index in deepstack:
                     hidden = LLMForExport._deepstack_add(
                         hidden, self.visual_pos_masks, deepstack[index].to(hidden.dtype)
                     )
             if self.last:
+                (state,) = inputs[added:]
                 # GR00T consumes the decoder output before Qwen's final norm.
                 features = self.vl_self_attention(self.vlln(hidden))
                 state_features = self.state_encoder(state.reshape(state.shape[0], 1, -1), self.embodiment_id)
@@ -698,13 +717,16 @@ class GrootExport:
                 first,
                 stop,
                 self.config.use_bf16,
+                len(deepstack),
             ).eval()
             del policy
-            inputs = (hidden, state, *deepstack)
+            state_input = ((state,), ["state"]) if module.last else ((), [])
+            inputs = (hidden, *(deepstack[i] for i in module.deepstack_layers), *state_input[0])
+            names = [hidden_name, *(deepstack_names[i] for i in module.deepstack_layers), *state_input[1]]
             with torch.no_grad():
                 result = module(*inputs)
             outputs = ["vl_embeds", "state_features"] if module.last else [f"language_hidden_{group}"]
-            yield f"language_model_{group}", module, inputs, [hidden_name, "state", *deepstack_names], outputs
+            yield f"language_model_{group}", module, inputs, names, outputs
             if module.last:
                 vl_embeds, state_features = result
             else:

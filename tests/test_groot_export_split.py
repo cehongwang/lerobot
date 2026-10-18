@@ -213,12 +213,41 @@ def test_language_slices_preserve_global_deepstack_indices_and_pre_norm_output(r
         expected_state = head.state_encoder(state, fixed["embodiment_id"])
         hidden = images
         for start, stop in ((0, 1), (1, 3), (3, 4)):
-            part = recipe.GrootLanguageModel(text, head, fixed, start, stop, False).eval()
-            inputs = (hidden, state, *deepstack)
+            part = recipe.GrootLanguageModel(text, head, fixed, start, stop, False, len(deepstack)).eval()
+            inputs = (
+                hidden,
+                *(deepstack[i] for i in part.deepstack_layers),
+                *((state,) if part.last else ()),
+            )
             hidden = part(*inputs)
             saved = torch.export.export(part, inputs).module()(*inputs)
             torch.testing.assert_close(saved, hidden, rtol=0, atol=0)
     torch.testing.assert_close(hidden, (expected, expected_state), rtol=0, atol=0)
+
+
+def test_language_slices_take_only_the_inputs_their_layers_read(recipe):
+    from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLTextConfig
+    from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLTextModel
+
+    text = Qwen3VLTextModel(
+        Qwen3VLTextConfig(
+            vocab_size=32,
+            hidden_size=32,
+            intermediate_size=64,
+            num_hidden_layers=8,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            head_dim=8,
+            rope_parameters={"rope_type": "default", "rope_theta": 10000.0, "mrope_section": [1, 1, 2]},
+        )
+    ).eval()
+    head, fixed = tiny_head(), constants()
+    slices = {
+        (start, stop): recipe.GrootLanguageModel(text, head, fixed, start, stop, False, 3)
+        for start, stop in ((0, 2), (2, 6), (6, 8))
+    }
+    assert [part.deepstack_layers for part in slices.values()] == [[0, 1], [2], []]
+    assert [part.last for part in slices.values()] == [False, False, True]
 
 
 @pytest.mark.parametrize("alternate,interleave", [(False, False), (False, True), (True, True)])
