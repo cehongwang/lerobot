@@ -1839,6 +1839,41 @@ def test_export_engine_refuses_a_program_that_misses_its_test_case(tmp_path, cpu
         cpu_export_engine(tmp_path)
 
 
+@pytest.mark.parametrize("bad", ["nan", "shape"])
+def test_export_engine_refuses_nan_actions_and_a_wrong_shape(tmp_path, monkeypatch, bad):
+    import numpy as np
+
+    from lerobot.inference.export import engine as export_engine
+
+    _write_export_folder(tmp_path, [[0, 1, 2], [0, 2, 4]])
+
+    def program(state):
+        chunk = _fake_program(state)
+        # One step more than the test case: comparing only the overlap would match.
+        return np.full_like(chunk, np.nan) if bad == "nan" else np.concatenate([chunk, chunk[:, :1]], axis=1)
+
+    monkeypatch.setattr(export_engine, "load_program", lambda folder, info: program)
+    with pytest.raises(RuntimeError, match="does not reproduce its test case"):
+        export_engine.ExportInferenceEngine(tmp_path, task="", robot_type="")
+
+
+@pytest.mark.parametrize("event", ["task", "reset"])
+def test_export_engine_drops_the_queued_chunk_on_a_task_change_or_reset(tmp_path, cpu_export_engine, event):
+    import numpy as np
+
+    _write_export_folder(tmp_path, [[0, 1, 2], [0, 2, 4]])
+    engine = cpu_export_engine(tmp_path)
+    frame = {"observation.state": np.array([1, 2, 3], dtype=np.float32)}
+    with patch.object(engine, "_run_chunk", wraps=engine._run_chunk) as run_chunk:
+        engine.get_action(frame)
+        if event == "task":
+            assert engine.set_task("place")
+        else:
+            engine.reset()
+        np.testing.assert_array_equal(engine.get_action(frame), [1, 2, 3])
+    assert run_chunk.call_count == 2
+
+
 def test_export_engine_applies_the_rename_map_to_the_robot_frame(tmp_path, monkeypatch):
     import numpy as np
 
