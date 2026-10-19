@@ -424,8 +424,8 @@ try:
             {"observation.state": state_vector(), "observation.images.front": front_rgb()},
             capture_time=captured,
         )
-        # send() receives a torch tensor in the deployment's action order; hold() refreshes
-        # the last applied target. Returns None when the tick was held or starved.
+        # send() receives a torch tensor (a NumPy array from an exported policy) in the deployment's
+        # action order; hold() refreshes the last applied target. Returns None when held or starved.
         dispatch_tick(engine, interpolator, send=robot_send, hold=robot_hold)
 finally:
     engine.stop()  # revokes motion and closes the client

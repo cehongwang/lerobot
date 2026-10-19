@@ -70,7 +70,7 @@ def next_interpolated_action(
     *,
     hold: Callable[[], None] | None = None,
     timer: CycleTimer | None = None,
-) -> torch.Tensor | None:
+) -> torch.Tensor | np.ndarray | None:
     """Return the next interpolated target, pulling one policy action when needed.
 
     ``obs_frame`` is the frame handed to ``engine.get_action`` or a zero-argument
@@ -120,14 +120,15 @@ def dispatch_tick(
     interpolator: ActionInterpolator,
     obs_frame: dict | Callable[[], dict | None] | None = None,
     *,
-    send: Callable[[torch.Tensor], None],
+    send: Callable[[torch.Tensor | np.ndarray], None],
     hold: Callable[[], None] | None = None,
     timer: CycleTimer | None = None,
-) -> torch.Tensor | None:
+) -> torch.Tensor | np.ndarray | None:
     """One complete autonomous motor tick: gate, pull, interpolate, gate, send, record.
 
-    ``send`` receives the canonical target in the engine's action order and must
-    apply it promptly; conversion to the driver's action format belongs inside it.
+    ``send`` receives the canonical target in the engine's action order (a torch tensor, or a NumPy
+    array from an exported policy) and must apply it promptly; conversion to the driver's action
+    format belongs inside it.
     Returns the dispatched target, or ``None`` when the tick was held or starved.
     """
     target = next_interpolated_action(engine, interpolator, obs_frame, hold=hold, timer=timer)
