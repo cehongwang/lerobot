@@ -95,7 +95,7 @@ class SmolVLAExport:
         tensor_steps = PolicyProcessorPipeline(steps=[s for s in preprocessor.steps if s not in text_steps])
 
         metadata = LeRobotDatasetMetadata(args.dataset, root=args.dataset_root)
-        self.task = str(metadata.tasks.index[0])
+        self.task = dataset_task(metadata, args.task)
         self.frame = random_robot_frame(metadata.features)
         # The folder takes the robot's cameras, so its config names them, not the checkpoint's placeholders.
         self.input_features = {
@@ -184,6 +184,16 @@ def random_robot_frame(features: dict[str, dict]) -> dict[str, np.ndarray]:
     return frame
 
 
+def dataset_task(metadata: LeRobotDatasetMetadata, task: str | None) -> str:
+    """`task`, which must be one of the dataset's tasks, or the dataset's first task."""
+    tasks = [str(t) for t in metadata.tasks.index]
+    if task is None:
+        return tasks[0]
+    if task not in tasks:
+        raise ValueError(f"--task must be one of the dataset's tasks: {tasks}.")
+    return task
+
+
 def parse_args(description: str, backend: str) -> argparse.Namespace:
     """The command line every SmolVLA export script shares."""
     parser = argparse.ArgumentParser(
@@ -203,6 +213,10 @@ def parse_args(description: str, backend: str) -> argparse.Namespace:
     )
     parser.add_argument(
         "--output_dir", type=Path, help="Folder to write. Default: a new one under outputs/export."
+    )
+    parser.add_argument(
+        "--task",
+        help="The task to export the policy for, one of the dataset's tasks. Default: its first task.",
     )
     parser.add_argument("--job_name", default=f"smolvla_{backend}", help="Names the default output folder.")
     # TensorRT reorders bfloat16 math, so actions drift by up to about 4; wrong noise gives 13 or more.

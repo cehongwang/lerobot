@@ -53,6 +53,7 @@ def test_checkpoint_split_matches_chunk(monkeypatch, tmp_path):
     torch.manual_seed(14)
     np.random.seed(14)
     args = Namespace(
+        task=None,
         output_dir=tmp_path,
         policy_path=checkpoint,
         backend="eager",
@@ -547,6 +548,18 @@ def test_numpy_action_decoding_is_refused_before_any_part_is_built(recipe):
     recipe.check_traceable_decode(action_pipeline(GrootActionUnpackUnnormalizeStep()))
     with pytest.raises(ValueError, match="cannot be exported"):
         recipe.check_traceable_decode(action_pipeline(GrootN17ActionDecodeStep()))
+
+
+def test_task_must_be_one_of_the_dataset_tasks(recipe):
+    import pandas as pd
+
+    smolvla = importlib.import_module("smolvla_recipe")
+    metadata = SimpleNamespace(tasks=pd.DataFrame(index=["pick the cup", "open the drawer"]))
+    assert smolvla.dataset_task(metadata, None) == "pick the cup"
+    assert smolvla.dataset_task(metadata, "open the drawer") == "open the drawer"
+    with pytest.raises(ValueError, match="one of the dataset's tasks"):
+        smolvla.dataset_task(metadata, "close the drawer")
+    assert recipe.dataset_task is smolvla.dataset_task
 
 
 @pytest.mark.parametrize("policy", ["pi05", "groot"])

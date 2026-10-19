@@ -49,7 +49,7 @@ Each policy has one script per route (the way it is compiled). All routes use [T
 
 `<policy>` is `act`, `smolvla`, `pi05` or `groot`. Some policies need one or two more arguments:
 
-- **SmolVLA and GR00T** read the camera names and the task from the dataset they were trained on: add `--dataset.repo_id="<user>/so101_dataset"`, and `--dataset.root=<folder>` if the dataset is on your disk.
+- **SmolVLA and GR00T** read the camera names and the task from the dataset they were trained on: add `--dataset.repo_id="<user>/so101_dataset"`, and `--dataset.root=<folder>` if the dataset is on your disk. They export for the dataset's first task; add `--task="<one of its tasks>"` to choose another.
 - **pi0.5** needs the task it was trained on, and the camera slots your robot fills (it fills the rest by itself):
 
 ```bash

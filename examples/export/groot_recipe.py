@@ -50,7 +50,7 @@ from act_recipe import (
     to_policy_input,
 )
 from safetensors.numpy import save_file
-from smolvla_recipe import random_robot_frame
+from smolvla_recipe import dataset_task, random_robot_frame
 from torch import Tensor, nn
 from transformers.feature_extraction_utils import BatchFeature
 from transformers.utils import cached_file
@@ -691,7 +691,7 @@ class GrootExport:
     def read_dataset(self, args: argparse.Namespace) -> None:
         """The task, a random frame and the robot's input features, from the dataset the policy was trained on."""
         metadata = LeRobotDatasetMetadata(args.dataset, root=args.dataset_root)
-        self.task = str(metadata.tasks.index[0])
+        self.task = dataset_task(metadata, args.task)
         self.frame = random_robot_frame(metadata.features)
         # The folder takes the robot's cameras, so its config names them, not the checkpoint's placeholders.
         self.input_features = {
@@ -900,6 +900,10 @@ def parse_args(description: str, backend: str) -> argparse.Namespace:
     )
     parser.add_argument(
         "--output_dir", type=Path, help="Folder to write. Default: a new one under outputs/export."
+    )
+    parser.add_argument(
+        "--task",
+        help="The task to export the policy for, one of the dataset's tasks. Default: its first task.",
     )
     parser.add_argument("--job_name", default=f"groot_{backend}", help="Names the default output folder.")
     parser.add_argument(
