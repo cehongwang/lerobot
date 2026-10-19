@@ -184,7 +184,6 @@ class TensorRTEngine:
         self._input_shapes = [tuple(self._engine.get_tensor_shape(name)) for name in input_names]
         self._input_dtypes = [numpy_dtype(self._engine.get_tensor_dtype(name)) for name in input_names]
         self._inputs: dict[str, CudaBuffer] = {}
-        self._output_names = output_names
         self._outputs = [
             CudaBuffer(self._engine.get_tensor_shape(name), numpy_dtype(self._engine.get_tensor_dtype(name)))
             for name in output_names

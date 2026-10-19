@@ -126,7 +126,7 @@ class ACTExport:
         self.start = time.perf_counter()
 
     def release_policy(self) -> None:
-        """Compute the test case's actions, the policy's last use, then free it for the TensorRT step."""
+        """Compute the test case's actions, the policy's last use, then free it before saving the program."""
         self.expected_actions = self.rollout_actions()
         del self.policy, self.module
         gc.collect()
@@ -164,8 +164,9 @@ class ACTExport:
             robot_type="",
         )
         engine.reset()
-        steps = self.policy.config.n_action_steps
-        return np.stack([engine.get_action(dict(self.frame)).numpy() for _ in range(steps)])
+        return np.stack(
+            [engine.get_action(dict(self.frame)).numpy() for _ in range(self.policy.config.n_action_steps)]
+        )
 
 
 def save_for_build_engine(export, program: torch.export.ExportedProgram, program_path: Path) -> None:

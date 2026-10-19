@@ -102,7 +102,8 @@ class ProgramChain:
 
     Each program reads the frame, the noise, or the outputs of a program before it, by name. The `step`
     program (or `step_0`, `step_1`, ...) runs once per denoising step, from `timesteps` with step size `dt`.
-    A program with `run_device` hands its outputs to the next one on the GPU.
+    A program with `run_device` hands its outputs to the next one on the GPU. The step's own output does so
+    only in a `device_resident` chain, since the Euler update between steps runs on NumPy arrays otherwise.
     """
 
     def __init__(self, programs: Mapping[str, Any], info: dict):

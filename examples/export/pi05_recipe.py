@@ -23,8 +23,8 @@ inference. The program keeps only the vocabulary rows the task's prompt can hold
 which ties the folder to that task (`task_fixed` in `export.json`).
 
 The chunk is a chain of programs (the embeddings, the language model in groups of three layers, one
-denoising step, and the actions), each built in its own process from only its own weights, so an 8 GB
-board can export it.
+denoising step, and the actions), each built in its own process with one part's weights in memory at a
+time, so an 8 GB board can export it.
 """
 
 import argparse
@@ -118,18 +118,23 @@ def export_parts(
     device_resident: bool = False,
     cuda_graphs: bool = False,
 ) -> None:
-    """Export the chunk one program per process, each loading only its own part of the policy.
+    """Export the chunk one program per process.
 
     Without `--part`, run `script` again once per part, because a process that built a part keeps some of its
-    memory until it exits. With `--part`, build only that part with `compile_part`; the last part also writes
-    `export.json`.
+    memory until it exits. With `--part`, run the parts before it to make its inputs, one at a time, and build
+    only that part with `compile_part`; the last part also writes `export.json`.
     """
+    names = part_names(args.policy_path)
     if args.part is None:
         output_dir = make_output_dir(args.output_dir, args.job_name)
-        for name in part_names(args.policy_path):
-            command = [sys.executable, script, *sys.argv[1:], f"--output_dir={output_dir}", f"--part={name}"]
-            subprocess.run(command, check=True)
+        for name in names:
+            subprocess.run(
+                [sys.executable, script, *sys.argv[1:], f"--output_dir={output_dir}", f"--part={name}"],
+                check=True,
+            )
         return
+    if args.part not in names:
+        raise ValueError(f"Unknown part {args.part!r}; choose from {names}.")
     export = PI05Export(args)
     programs = {}
     for name, module, inputs, input_names, output_names in export.parts():
@@ -374,8 +379,8 @@ class PI05Export:
     def parts(self) -> Iterator[tuple[str, nn.Module, tuple, list[str], list[str]]]:
         """Yield the chunk's programs one at a time, each with its example inputs, input names and output names.
 
-        Each part runs once in PyTorch to make the next part's inputs, and is dropped before the next one
-        loads, so only one part is ever in memory.
+        Each part runs in PyTorch to make the next part's inputs (the step once per denoising step), and is
+        dropped before the next one loads, so only one part is ever in memory.
         """
         observation, names = self.inputs[:-1], self.input_names[:-1]
         embed = PI05Embed(self.policy, self.observation)

@@ -24,7 +24,8 @@ and held as constants, as in NVIDIA's own GR00T deployment code. The runtime res
 NumPy; no tokenizer runs at inference.
 
 The split routes export a chain (vision, the language model in groups of six layers, the diffusion model
-in groups of eight blocks, and the actions), one part per process, so an 8 GB board can export it.
+in groups of eight blocks, and the actions), one part per process with one part's weights in memory at a
+time, so an 8 GB board can export it.
 """
 
 import argparse
@@ -113,10 +114,7 @@ def export_parts(
     compile_part: Callable[[nn.Module, tuple, list[str], list[str], Path], None],
     device_resident: bool = False,
 ) -> None:
-    """Export the chunk one program per process, each loading only its own part of the policy.
-
-    It works as pi0.5's `export_parts` does, and also rejects an unknown `--part`.
-    """
+    """Export the chunk one program per process, as pi0.5's `export_parts` does."""
     names = part_names(args.policy_path)
     if args.part is None:
         output_dir = make_output_dir(args.output_dir, args.job_name)
@@ -710,8 +708,9 @@ class GrootExport:
     def parts(self) -> Iterator[tuple[str, nn.Module, tuple, list[str], list[str]]]:
         """Yield the chunk's programs one at a time, each with only its own weights in memory.
 
-        Each program comes with its example inputs, input names and output names. Each part runs once in
-        PyTorch to make the next part's inputs, and the test case's actions are those parts chained.
+        Each program comes with its example inputs, input names and output names. Each part runs in PyTorch to
+        make the next part's inputs (the step parts once per denoising step), and the test case's actions are
+        those parts chained.
         """
         module = GrootVision(
             self.policy._groot_model.backbone.visual,
@@ -825,7 +824,7 @@ class GrootExport:
         yield "actions", module, (actions, state), ["x_t", OBS_STATE], [ACTION]
 
     def release_policy(self) -> None:
-        """Free the policy before the backend compiles; the test case's actions are already computed."""
+        """Free the policy before the program is saved; the test case's actions are already computed."""
         del self.policy, self.module
         gc.collect()
         torch.cuda.empty_cache()

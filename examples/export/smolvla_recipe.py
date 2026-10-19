@@ -87,11 +87,10 @@ class SmolVLAExport:
         self.backend, self.tolerance = args.backend, args.tolerance
         self.policy = SmolVLAPolicy.from_pretrained(self.policy_path).to("cuda").eval()
         self.config = self.policy.config
-        preprocessor, postprocessor = self.processors()
+        preprocessor, postprocessor = gpu_processors(self.config, self.policy_path)
         text_steps = [
             s for s in preprocessor.steps if isinstance(s, NewLineTaskProcessorStep | TokenizerProcessorStep)
         ]
-        self.text_steps = PolicyProcessorPipeline(steps=text_steps)
         tensor_steps = PolicyProcessorPipeline(steps=[s for s in preprocessor.steps if s not in text_steps])
 
         metadata = LeRobotDatasetMetadata(args.dataset, root=args.dataset_root)
@@ -103,7 +102,7 @@ class SmolVLAExport:
             for name, feature in dataset_to_policy_features(metadata.features).items()
             if name in self.frame
         }
-        prompt = self.text_steps(
+        prompt = PolicyProcessorPipeline(steps=text_steps)(
             prepare_observation_for_inference(dict(self.frame), torch.device("cuda"), self.task)
         )
         self.noise = torch.randn(self.config.chunk_size, self.config.max_action_dim, device="cuda")
@@ -120,7 +119,7 @@ class SmolVLAExport:
         self.start = time.perf_counter()
 
     def release_policy(self) -> None:
-        """Compute the test case's actions, the policy's last use, then free it for the TensorRT step."""
+        """Compute the test case's actions, the policy's last use, then free it before saving the program."""
         self.expected_actions = self.rollout_actions()
         del self.policy, self.module
         gc.collect()
@@ -152,17 +151,10 @@ class SmolVLAExport:
         (self.output_dir / "export.json").write_text(json.dumps(info, indent=2) + "\n")
         print(f"Wrote {self.output_dir} in {time.perf_counter() - self.start:.0f} s")
 
-    def processors(self) -> tuple[PolicyProcessorPipeline, PolicyProcessorPipeline]:
-        """The checkpoint's processors on the GPU, with the tokenizer padding every task to one width."""
-        preprocessor, postprocessor = gpu_processors(self.policy.config, self.policy_path)
-        # One width for every task, so the program's token inputs keep the shape they were exported with.
-        next(s for s in preprocessor.steps if isinstance(s, TokenizerProcessorStep)).padding = "max_length"
-        return preprocessor, postprocessor
-
     def rollout_actions(self) -> np.ndarray:
         """The chunk the PyTorch policy computes for the test frame, task and noise, as lerobot-rollout runs it."""
         # Fresh processors: compiling the module leaves its own holding tensors that cannot leave the GPU.
-        preprocessor, postprocessor = self.processors()
+        preprocessor, postprocessor = gpu_processors(self.config, self.policy_path)
         self.policy.reset()
         observation = prepare_observation_for_inference(dict(self.frame), torch.device("cuda"), self.task)
         with torch.inference_mode():

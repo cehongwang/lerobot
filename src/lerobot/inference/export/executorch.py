@@ -93,9 +93,6 @@ class DeviceResidentProgram(ExecuTorchProgram):
             for output in self._method.execute(tensors)
         )
 
-    def initialize(self, *inputs: np.ndarray) -> np.ndarray | tuple[np.ndarray, ...]:
-        return self(*inputs)
-
     def __call__(self, *inputs: np.ndarray | Any) -> np.ndarray | tuple[np.ndarray, ...]:
         outputs = [to_numpy(value) for value in self.run_device(*inputs)]
         return outputs[0] if len(outputs) == 1 else tuple(outputs)
