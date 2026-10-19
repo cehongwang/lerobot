@@ -14,6 +14,7 @@
 
 import json
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -464,3 +465,53 @@ def test_device_resident_chain_passes_cuda_tensors_between_programs(
     np.testing.assert_allclose(actions, np.full((1, 3), 20.0 if positive else -20.0))
     np.testing.assert_array_equal(program(*inputs), actions)
     assert len(downloaded) == 2
+
+
+@pytest.mark.parametrize("chain", [False, True])
+def test_torch_tensorrt_package_takes_host_arrays_and_returns_host_actions(tmp_path, monkeypatch, chain):
+    """The AOTInductor runner hands the package tensors and returns NumPy, alone and as a chain."""
+    import torch
+
+    loaded, received = [], []
+
+    def load_package(path):
+        loaded.append(Path(path).name)
+
+        def run(*inputs):
+            received.append((Path(path).name, [type(x) for x in inputs]))
+            if Path(path).name == "prefix.pt2":
+                return [inputs[0] * 2]
+            if Path(path).name == "step.pt2":
+                return [inputs[0] + inputs[1] * 0]
+            return [inputs[0] * 10]
+
+        return run
+
+    monkeypatch.setitem(sys.modules, "torch_tensorrt", SimpleNamespace())
+    monkeypatch.setattr(torch._inductor, "aoti_load_package", load_package)
+    monkeypatch.setattr(torch.Tensor, "to", lambda self, *args, **kwargs: self)
+    if chain:
+        names = {
+            "prefix": (["observation.state"], ["past_key_0"]),
+            "step": (["past_key_0", "x_t", "timestep"], ["v_t"]),
+            "actions": (["x_t"], ["action"]),
+        }
+        info = {
+            "backend": "torch_tensorrt",
+            "inputs": ["observation.state", "noise"],
+            "programs": {
+                name: {"file": f"{name}.pt2", "inputs": inputs, "outputs": outputs}
+                for name, (inputs, outputs) in names.items()
+            },
+            "num_steps": 1,
+        }
+        actions = load_program(tmp_path, info)(np.ones((1, 3), np.float32), np.zeros((1, 3), np.float32))
+        assert loaded == ["prefix.pt2", "step.pt2", "actions.pt2"]
+        np.testing.assert_allclose(actions, np.full((1, 3), -20.0))
+    else:
+        info = {"backend": "torch_tensorrt", "file": "model.pt2"}
+        actions = load_program(tmp_path, info)(np.full((1, 3), 2.0, np.float32))
+        assert loaded == ["model.pt2"]
+        np.testing.assert_array_equal(actions, np.full((1, 3), 20.0))
+    assert isinstance(actions, np.ndarray)
+    assert all(kind is torch.Tensor for _, kinds in received for kind in kinds), received
