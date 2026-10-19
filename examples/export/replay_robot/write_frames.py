@@ -50,6 +50,7 @@ def main() -> None:
     names = list(dataset.meta.features["observation.state"]["names"])
     state = np.zeros((len(dataset), len(names)), dtype=np.float32)
     offsets = {cam: [0] for cam in CAMERAS}
+    shapes = {}
     args.output_dir.mkdir(parents=True, exist_ok=True)
     with ExitStack() as stack:
         files = {cam: stack.enter_context(open(args.output_dir / f"{cam}.jpg.bin", "wb")) for cam in CAMERAS}
@@ -63,12 +64,14 @@ def main() -> None:
                 if not ok:
                     raise RuntimeError(f"Could not encode frame {i} of camera {cam}")
                 files[cam].write(jpeg.tobytes())
+                shapes[cam] = rgb.shape
                 offsets[cam].append(offsets[cam][-1] + len(jpeg))
     np.savez(
         args.output_dir / "index.npz",
         state=state,
         names=np.array(names),
-        shape=np.array(rgb.shape),
+        fps=dataset.meta.fps,
+        **{f"{cam}_shape": np.array(shapes[cam]) for cam in CAMERAS},
         **{f"{cam}_offsets": np.array(offsets[cam], dtype=np.int64) for cam in CAMERAS},
     )
     print(f"Wrote {len(dataset)} frames at {dataset.meta.fps} fps to {args.output_dir}")

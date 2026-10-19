@@ -99,7 +99,6 @@ lerobot-rollout \
     --policy.path=outputs/export/act_executorch_tensorrt \
     --robot.type=replay \
     --robot.frames_dir=outputs/replay_frames \
-    --robot.fps=30 \
     --duration=60 \
     --return_to_initial_position=false \
     --play_sounds=false

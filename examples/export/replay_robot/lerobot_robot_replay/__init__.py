@@ -40,7 +40,8 @@ CAMERAS = ("wrist", "scene")
 class ReplayRobotConfig(RobotConfig):
     # Folder write_frames.py made: index.npz (state, joint names, frame shape) and one <camera>.jpg.bin per camera.
     frames_dir: str = ""
-    fps: int = 30
+    # Frames per second to play at; 0 plays at the rate the episodes were recorded.
+    fps: int = 0
     start_frame: int = 0
     # File the action and observation timestamps are written to at disconnect; empty writes nothing.
     log_path: str = ""
@@ -57,7 +58,8 @@ class ReplayRobot(Robot):
         index = np.load(folder / "index.npz")
         self._state = index["state"]
         self._motors = [str(name) for name in index["names"]]
-        self._shape = tuple(int(n) for n in index["shape"])
+        self._shapes = {cam: tuple(int(n) for n in index[f"{cam}_shape"]) for cam in CAMERAS}
+        self._fps = config.fps or int(index["fps"])
         # Read one JPEG at a time, so the recording never sits in this process's memory and RSS stays comparable.
         self._jpegs = {
             cam: (os.open(folder / f"{cam}.jpg.bin", os.O_RDONLY), index[f"{cam}_offsets"]) for cam in CAMERAS
@@ -65,6 +67,7 @@ class ReplayRobot(Robot):
         self._latest: dict[str, np.ndarray] = {}
         self._frame_lock = threading.Lock()
         self._stop = threading.Event()
+        self._error: Exception | None = None
         self._threads: list[threading.Thread] = []
         self._t0 = 0.0
         self._connected = False
@@ -74,7 +77,7 @@ class ReplayRobot(Robot):
 
     @cached_property
     def observation_features(self) -> dict[str, type | tuple]:
-        return {**dict.fromkeys(self._motors, float), **dict.fromkeys(CAMERAS, self._shape)}
+        return {**dict.fromkeys(self._motors, float), **self._shapes}
 
     @cached_property
     def action_features(self) -> dict[str, type]:
@@ -95,17 +98,27 @@ class ReplayRobot(Robot):
         pass
 
     def _frame_index(self, now: float) -> int:
-        return (self.config.start_frame + int((now - self._t0) * self.config.fps)) % len(self._state)
+        return (self.config.start_frame + int((now - self._t0) * self._fps)) % len(self._state)
 
     def _camera_loop(self, cam: str) -> None:
+        try:
+            self._play(cam)
+        except Exception as error:
+            # Kept for connect() and get_observation() to raise, instead of freezing on the last frame.
+            self._error = error
+
+    def _play(self, cam: str) -> None:
         # Decodes on its own thread at the camera rate, as an OpenCV camera's read thread does.
         fd, offsets = self._jpegs[cam]
-        period = 1.0 / self.config.fps
+        period = 1.0 / self._fps
         next_time = time.perf_counter()
         while not self._stop.is_set():
             i = self._frame_index(time.perf_counter())
             jpeg = np.frombuffer(os.pread(fd, int(offsets[i + 1] - offsets[i]), int(offsets[i])), np.uint8)
-            frame = cv2.cvtColor(cv2.imdecode(jpeg, cv2.IMREAD_COLOR), cv2.COLOR_BGR2RGB)
+            image = cv2.imdecode(jpeg, cv2.IMREAD_COLOR)
+            if image is None:
+                raise RuntimeError(f"Frame {i} of the {cam} camera is not a valid JPEG")
+            frame = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             with self._frame_lock:
                 self._latest[cam] = frame
             next_time += period
@@ -124,10 +137,16 @@ class ReplayRobot(Robot):
             thread.start()
             self._threads.append(thread)
         while len(self._latest) < len(CAMERAS):
+            self._raise_camera_error()
             time.sleep(0.005)
         self._connected = True
 
+    def _raise_camera_error(self) -> None:
+        if self._error is not None:
+            raise RuntimeError("A replay camera stopped") from self._error
+
     def get_observation(self) -> dict:
+        self._raise_camera_error()
         now = time.perf_counter()
         self._observation_times.append(now)
         i = self._frame_index(now)
