@@ -819,7 +819,7 @@ class GrootExport:
                 del module
         free_memory()
         module = GrootActions(self.horizon, self.config.output_features[ACTION].shape[0], self.postprocessor)
-        state = torch.from_numpy(self.frame[OBS_STATE]).cuda()
+        state = torch.from_numpy(self.frame[OBS_STATE]).to(actions.device)
         with torch.no_grad():
             self.expected_actions = module(actions, state).float().cpu().numpy()
         yield "actions", module, (actions, state), ["x_t", OBS_STATE], [ACTION]

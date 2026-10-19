@@ -417,7 +417,7 @@ class PI05Export:
         del step
         free_memory()
         actions = PI05Actions(self.load_part(), self.postprocessor)
-        state = torch.from_numpy(self.frame[OBS_STATE]).cuda()
+        state = torch.from_numpy(self.frame[OBS_STATE]).to(x_t.device)
         with torch.no_grad():
             self.expected_actions = actions(x_t, state).cpu().numpy()
         yield "actions", actions, (self.noise, state), ["x_t", OBS_STATE], [ACTION]

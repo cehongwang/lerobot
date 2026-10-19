@@ -239,6 +239,72 @@ def test_language_slices_preserve_global_deepstack_indices_and_pre_norm_output(r
     torch.testing.assert_close(hidden, (expected, expected_state), rtol=0, atol=0)
 
 
+def test_vision_wrapper_matches_the_hugging_face_vision_model(recipe):
+    from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLVisionConfig
+    from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLVisionModel
+
+    torch.manual_seed(14)
+    vision = Qwen3VLVisionModel(
+        Qwen3VLVisionConfig(
+            depth=3,
+            hidden_size=32,
+            intermediate_size=64,
+            num_heads=4,
+            patch_size=2,
+            temporal_patch_size=2,
+            spatial_merge_size=2,
+            out_hidden_size=32,
+            num_position_embeddings=16,
+            deepstack_visual_indexes=[0, 1, 2],
+        )
+    ).eval()
+    grid, pixels = torch.tensor([[1, 4, 4], [1, 4, 4]]), torch.randn(32, 24)
+    with torch.no_grad():
+        expected = vision(pixels, grid)
+        images, deepstack = recipe.Qwen3VisionForExport(vision, grid).eval()(pixels)
+    torch.testing.assert_close(images, expected.pooler_output, rtol=0, atol=1e-6)
+    torch.testing.assert_close(deepstack, torch.stack(expected.deepstack_features), rtol=0, atol=1e-6)
+
+
+def test_language_wrapper_matches_the_hugging_face_text_model(recipe):
+    from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLTextConfig
+    from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLTextModel
+
+    torch.manual_seed(14)
+    text = Qwen3VLTextModel(
+        Qwen3VLTextConfig(
+            vocab_size=32,
+            hidden_size=32,
+            intermediate_size=64,
+            num_hidden_layers=4,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            head_dim=8,
+            rope_parameters={"rope_type": "default", "rope_theta": 10000.0, "mrope_section": [1, 1, 2]},
+        )
+    ).eval()
+    fixed = constants()
+    deepstack = [torch.randn(2, 32) for _ in range(3)]
+    embeddings = fixed["text_embeds"].masked_scatter(fixed["image_token_mask"], torch.randn(2, 32))
+    last = []
+    # The wrapper returns the last layer's output, before the model's final norm.
+    text.layers[-1].register_forward_hook(lambda module, args, output: last.append(output))
+    with torch.no_grad():
+        text(
+            inputs_embeds=embeddings,
+            attention_mask=fixed["attention_mask"],
+            position_ids=fixed["position_ids"],
+            visual_pos_masks=fixed["visual_pos_masks"],
+            deepstack_visual_embeds=deepstack,
+        )
+        actual = recipe.LLMForExport(text)(
+            embeddings, fixed["attention_mask"], fixed["position_ids"], fixed["visual_pos_masks"], *deepstack
+        )
+    expected = last[0][0] if isinstance(last[0], tuple) else last[0]
+    valid = fixed["attention_mask"][0].bool()
+    torch.testing.assert_close(actual[:, valid], expected[:, valid], rtol=0, atol=1e-5)
+
+
 def test_language_slices_take_only_the_inputs_their_layers_read(recipe):
     from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLTextConfig
     from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLTextModel
@@ -352,6 +418,7 @@ def test_diffusion_parts_export_to_onnx_and_run_as_chain(recipe, monkeypatch, tm
 
     class Prefix(torch.nn.Module):
         last = True
+        deepstack_layers = []
 
         def forward(self, features, state):
             return features, state
@@ -376,7 +443,8 @@ def test_diffusion_parts_export_to_onnx_and_run_as_chain(recipe, monkeypatch, tm
         timesteps=[0, 333, 666],
         num_steps=3,
         horizon=2,
-        postprocessor=torch.nn.Identity(),
+        postprocessor=action_pipeline(),
+        frame={"observation.state": np.zeros(3, np.float32)},
     )
     # Keep the prefix tiny while exercising the real recipe's diffusion modules and names.
     monkeypatch.setattr(recipe, "GrootVision", lambda *args: Prefix())
@@ -428,13 +496,14 @@ def test_diffusion_parts_export_to_onnx_and_run_as_chain(recipe, monkeypatch, tm
             np.testing.assert_allclose(got, want.numpy(), rtol=1e-5, atol=1e-5)
     assert list(programs) == ["step_0", "step_1", "step_2", "step_3", "actions"]
     info = {
-        "inputs": ["vl_embeds", "state_features", "noise"],
+        "inputs": ["vl_embeds", "state_features", "observation.state", "noise"],
         "programs": metadata,
         "num_steps": export.num_steps,
         "timesteps": export.timesteps,
         "dt": 1 / export.num_steps,
     }
-    actual = ProgramChain(programs, info)(features.numpy(), state.numpy(), noise.numpy())
+    robot_state = export.frame["observation.state"]
+    actual = ProgramChain(programs, info)(features.numpy(), state.numpy(), robot_state, noise.numpy())
     np.testing.assert_allclose(actual, export.expected_actions, rtol=1e-5, atol=1e-5)
 
 
