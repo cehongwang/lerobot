@@ -252,12 +252,17 @@ class ExportInferenceEngine(InferenceEngine):
         actions = _call(self._program, initialize)(*(observation[name] for name in self._input_names))
         return (actions if self._raw_frame else actions[0]).copy()
 
-    def _check_task(self, task: str) -> None:
+    def _task_error(self, task: str) -> str | None:
         if self._fixed_task is not None and task != self._fixed_task:
-            raise ValueError(
+            return (
                 f"This exported policy only runs the task it was exported for, {self._fixed_task!r}, "
                 f"not {task!r}. Export it again with the new task."
             )
+        return None
+
+    def _check_task(self, task: str) -> None:
+        if error := self._task_error(task):
+            raise ValueError(error)
 
     def _check(self, path: Path, task: str, tolerance: float) -> None:
         case = load_file(path)
@@ -282,6 +287,15 @@ class ExportInferenceEngine(InferenceEngine):
     def control_thread_owns_policy(self) -> bool:
         return True
 
+    def text_input_error(self, text: str, *, instruction: bool = False) -> str | None:
+        if instruction and (error := self._task_error(text)):
+            return error
+        return super().text_input_error(text, instruction=instruction)
+
+    def dispatch_allowed(self) -> bool:
+        # Inline inference has no worker to pause, so the planner hold is applied here.
+        return not self.hold_for_planner()
+
     def start(self) -> None:
         """No background resources to start."""
 
@@ -297,7 +311,6 @@ class ExportInferenceEngine(InferenceEngine):
             return None
         task, task_changed = self._take_task()
         if task_changed:
-            self._check_task(task)
             self._actions.clear()
         if not self._actions:
             start = time.perf_counter()

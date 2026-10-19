@@ -2138,6 +2138,33 @@ def test_export_engine_refuses_another_task_than_a_fixed_task_export(tmp_path, c
     engine = export_engine.ExportInferenceEngine(tmp_path, task="pick", robot_type="")
     frame = {"observation.state": np.array([1, 2, 3], dtype=np.float32)}
     np.testing.assert_array_equal(engine.get_action(frame), [1, 2, 3])
-    engine.set_task("place")
-    with pytest.raises(ValueError, match="only runs the task it was exported for"):
-        engine.get_action(frame)
+    assert "only runs the task it was exported for" in engine.text_input_error("place", instruction=True)
+    assert engine.text_input_error("place") is None
+
+    from lerobot.rollout.controller import RolloutController
+    from tests.interactive_helpers import _make_ctx
+
+    ctx, strategy, *_ = _make_ctx()
+    ctx.policy.inference = engine
+    assert not RolloutController(strategy, ctx).set_task("place")
+    assert engine.task == "pick"
+    np.testing.assert_array_equal(engine.get_action(frame), [2, 4, 6])
+    engine.reset()
+    engine.get_action(frame)
+    assert engine.task == engine.dispatched_task == "pick"
+
+
+def test_export_engine_holds_the_robot_until_the_planner_replies(tmp_path, cpu_export_engine):
+    import numpy as np
+
+    _write_export_folder(tmp_path, [[0, 1, 2], [0, 2, 4]])
+    engine = cpu_export_engine(tmp_path)
+    engine.external_text = lambda obs, query, task: "pick up the cup"
+    assert engine.dispatch_allowed()
+    engine.start_autosteer("clear the table", interval_s=0.0)
+    assert engine.hold_for_planner()
+    assert not engine.dispatch_allowed()
+    engine.stop_autosteer()
+    assert engine.dispatch_allowed()
+    frame = {"observation.state": np.array([1, 2, 3], dtype=np.float32)}
+    np.testing.assert_array_equal(engine.get_action(frame), [1, 2, 3])
