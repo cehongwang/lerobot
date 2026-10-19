@@ -30,26 +30,12 @@ import json
 import time
 from pathlib import Path
 
-import tensorrt as trt
 import torch
 from act_recipe import EXPORTED_PROGRAM
-from executorch.exir import ExecutorchBackendConfig
-from executorch.exir.passes import MemoryPlanningPass
 
 from lerobot.inference.export import ExportInferenceEngine
 
 GIB = 1 << 30
-
-
-class FileWriter(trt.IStreamWriter):
-    """Writes the engine to a file as TensorRT serializes it, without another copy in memory."""
-
-    def __init__(self, file):
-        trt.IStreamWriter.__init__(self)
-        self._file = file
-
-    def write(self, data: bytes) -> int:
-        return self._file.write(data)
 
 
 def build_engine(
@@ -60,6 +46,18 @@ def build_engine(
     optimization_level: int | None = None,
 ) -> None:
     """Build a TensorRT engine that keeps the ONNX file's own dtypes, as the ExecuTorch route does."""
+    import tensorrt as trt
+
+    class FileWriter(trt.IStreamWriter):
+        """Writes the engine to a file as TensorRT serializes it, without another copy in memory."""
+
+        def __init__(self, file):
+            trt.IStreamWriter.__init__(self)
+            self._file = file
+
+        def write(self, data: bytes) -> int:
+            return self._file.write(data)
+
     logger = trt.Logger(trt.Logger.WARNING)
     builder = trt.Builder(logger)
     network = builder.create_network(1 << int(trt.NetworkDefinitionCreationFlag.STRONGLY_TYPED))
@@ -82,6 +80,8 @@ def build_engine(
 
 def build_executorch(folder: Path, program_file: str, args: argparse.Namespace) -> None:
     import torch_tensorrt
+    from executorch.exir import ExecutorchBackendConfig
+    from executorch.exir.passes import MemoryPlanningPass
 
     program = torch.export.load(folder / EXPORTED_PROGRAM)  # nosec B614: a folder the user exported
     inputs = program.example_inputs[0]
