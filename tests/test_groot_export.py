@@ -57,3 +57,55 @@ def test_patch_packing_preserves_order_with_at_most_eight_dimensions(monkeypatch
         if isinstance(node.meta.get("val"), torch.Tensor)
     ]
     assert max(ranks) <= 8
+
+
+def observation_for(monkeypatch, frame_cameras, video_keys, rename_map=None):
+    """A GrootObservation built from real rename and packing steps, for `frame_cameras` and the checkpoint's `video_keys`."""
+    from types import SimpleNamespace
+
+    import numpy as np
+
+    pytest.importorskip("transformers")
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "examples" / "export"))
+    from groot_recipe import GrootObservation
+
+    from lerobot.policies.groot.processor_groot import GrootN17PackInputsStep, GrootN17VLMEncodeStep
+    from lerobot.processor import PolicyProcessorPipeline, RenameObservationsProcessorStep
+
+    encode = GrootN17VLMEncodeStep(image_target_size=[8, 8])
+    image_processor = SimpleNamespace(
+        patch_size=2,
+        temporal_patch_size=1,
+        merge_size=2,
+        do_rescale=False,
+        do_normalize=False,
+        rescale_factor=1.0,
+        image_mean=[0.0] * 3,
+        image_std=[1.0] * 3,
+    )
+    monkeypatch.setattr(
+        type(encode), "proc", property(lambda self: SimpleNamespace(image_processor=image_processor))
+    )
+    pack = GrootN17PackInputsStep(video_modality_keys=video_keys, normalize_min_max=False)
+    preprocessor = PolicyProcessorPipeline(
+        steps=[RenameObservationsProcessorStep(rename_map=rename_map or {}), pack, encode]
+    )
+    frame = {f"observation.images.{n}": np.zeros((8, 8, 3), np.uint8) for n in frame_cameras}
+    frame["observation.state"] = np.zeros(6, np.float32)
+    used = len(video_keys) if video_keys else len(frame_cameras)
+    batch = {"image_grid_thw": torch.tensor([[1, 4, 4]] * used)}
+    return GrootObservation(preprocessor, frame, batch)
+
+
+def test_cameras_follow_the_checkpoint_order_and_its_wrist_alias(monkeypatch):
+    observation = observation_for(monkeypatch, ["image2", "image"], ["image", "wrist_image"])
+    assert observation.cameras == ["observation.images.image", "observation.images.image2"]
+    assert observation.image_resize["cameras"] == observation.cameras
+
+
+def test_resize_geometry_names_the_cameras_the_frame_carries(monkeypatch):
+    observation = observation_for(
+        monkeypatch, ["front"], ["ego_view"], {"observation.images.front": "observation.images.ego_view"}
+    )
+    assert observation.cameras == ["observation.images.ego_view"]
+    assert observation.image_resize["cameras"] == ["observation.images.front"]

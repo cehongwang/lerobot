@@ -66,8 +66,8 @@ from lerobot.policies.groot.processor_groot import (
     GrootN17VLMEncodeStep,
 )
 from lerobot.policies.utils import prepare_observation_for_inference
-from lerobot.processor import PolicyProcessorPipeline
-from lerobot.utils.constants import ACTION, OBS_IMAGES, OBS_STATE
+from lerobot.processor import PolicyProcessorPipeline, RenameObservationsProcessorStep
+from lerobot.utils.constants import ACTION, OBS_STATE
 from lerobot.utils.feature_utils import dataset_to_policy_features
 
 NOISE = "noise"
@@ -270,13 +270,10 @@ class GrootObservation(nn.Module):
         self.frame_names = list(frame)
         self.frame_processor = PolicyProcessorPipeline(steps=preprocessor.steps[:pack_index])
         sample = self.frame_processor({n: to_policy_input(n, torch.from_numpy(x)) for n, x in frame.items()})
-        self.cameras = (
-            sorted(n for n in sample if n.startswith(OBS_IMAGES))
-            if not pack.video_modality_keys
-            else [f"{OBS_IMAGES}.{n}" for n in pack.video_modality_keys]
-        )
-        if not self.cameras or not set(self.cameras) <= sample.keys():
-            raise ValueError("The frame must provide the checkpoint's camera keys.")
+        # The cameras the policy feeds, in its order, as its own packing step picks them.
+        self.cameras = pack._ordered_image_keys(sample)
+        if not self.cameras:
+            raise ValueError("The frame has no camera.")
         target_size = encode.image_target_size
         crop_fraction = encode.crop_fraction
         if crop_fraction is None and encode.image_crop_size and target_size:
@@ -288,8 +285,15 @@ class GrootObservation(nn.Module):
         if len(grids) != len(self.cameras) or any(g != grids[0] for g in grids) or grids[0][0] != 1:
             raise ValueError("Raw-frame export requires equal, single-frame camera grids.")
         _, self.grid_h, self.grid_w = grids[0]
+        # The engine resizes the frame before the rename step, so the geometry names the frame's cameras.
+        renamed = {
+            new: old
+            for step in self.frame_processor.steps
+            if isinstance(step, RenameObservationsProcessorStep)
+            for old, new in step.rename_map.items()
+        }
         self.image_resize = {
-            "cameras": self.cameras,
+            "cameras": [renamed.get(name, name) for name in self.cameras],
             "target_size": target_size,
             "resize_edge": encode.shortest_image_edge or (target_size[0] if target_size else None),
             "crop_fraction": crop_fraction,
