@@ -505,16 +505,26 @@ class GrootStep(nn.Module):
             return (hidden, temb) if self.start == 0 else hidden
 
 
-def check_traceable_decode(postprocessor: PolicyProcessorPipeline) -> None:
-    """Refuse at the start a checkpoint whose action decoding no compiled program can carry.
+def check_traceable_decode(postprocessor: PolicyProcessorPipeline, backend: str) -> None:
+    """Refuse at the start a checkpoint whose action decoding this route cannot compile.
 
-    GR00T N1.7 checkpoints with statistics for their embodiment decode actions in NumPy, which
-    torch.export cannot trace, so the export would otherwise fail at its last part after hours.
+    GR00T N1.7 checkpoints with statistics for their embodiment decode actions in NumPy. torch.export
+    cannot trace that, so the export would otherwise fail at its last part after hours. The ONNX
+    exporter traces it into the program, except relative actions, which add a state the decoder
+    caches between calls.
     """
-    if any(isinstance(s, GrootN17ActionDecodeStep) for s in postprocessor.steps):
+    decode = next((s for s in postprocessor.steps if isinstance(s, GrootN17ActionDecodeStep)), None)
+    if decode is None:
+        return
+    if decode.use_relative_action:
+        raise ValueError(
+            "This checkpoint decodes relative actions with GrootN17ActionDecodeStep, which adds the state "
+            "it cached from the last observation and cannot be exported."
+        )
+    if backend != "onnx_tensorrt":
         raise ValueError(
             "This checkpoint decodes its actions with GrootN17ActionDecodeStep, which runs in NumPy and "
-            "cannot be exported. Export a checkpoint whose statistics come from its training dataset."
+            "only the ONNX-TensorRT route can export: use groot_onnx_tensorrt.py."
         )
 
 
@@ -623,7 +633,7 @@ class GrootExport:
         self.policy = GrootPolicy.from_pretrained(self.policy_path).to("cuda").eval()
         self.config = self.policy.config
         preprocessor, postprocessor = gpu_processors(self.policy.config, self.policy_path)
-        check_traceable_decode(postprocessor)
+        check_traceable_decode(postprocessor, args.backend)
         self.read_dataset(args)
         batch = preprocessor(self.observation())
         model = self.policy._groot_model
@@ -652,7 +662,7 @@ class GrootExport:
         self.model_config = model.config
         self.horizon = self.policy._action_queue_steps
         preprocessor, self.postprocessor = gpu_processors(self.config, self.policy_path)
-        check_traceable_decode(self.postprocessor)
+        check_traceable_decode(self.postprocessor, args.backend)
         self.read_dataset(args)
         self.batch = preprocessor(self.observation())
         self.frame_processor = GrootObservation(preprocessor, self.frame, self.batch).cuda()

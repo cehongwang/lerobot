@@ -611,15 +611,68 @@ def test_actions_apply_the_postprocessor_after_slicing(recipe):
     torch.testing.assert_close(saved, part(values, state))
 
 
-def test_numpy_action_decoding_is_refused_before_any_part_is_built(recipe):
-    from lerobot.policies.groot.processor_groot import (
-        GrootActionUnpackUnnormalizeStep,
-        GrootN17ActionDecodeStep,
+def n17_decoder(relative=False):
+    from lerobot.policies.groot.processor_groot import GrootN17ActionDecodeStep
+
+    rep = {"rep": "relative", "state_key": "arm"} if relative else {"rep": "absolute"}
+    return GrootN17ActionDecodeStep(
+        env_action_dim=3,
+        raw_stats={"action": {"arm": {"min": [-2.0, -1.0, 0.0], "max": [2.0, 1.0, 10.0]}}},
+        modality_config={"action": {"modality_keys": ["arm"], "action_configs": [rep]}},
+        use_relative_action=relative,
     )
 
-    recipe.check_traceable_decode(action_pipeline(GrootActionUnpackUnnormalizeStep()))
-    with pytest.raises(ValueError, match="cannot be exported"):
-        recipe.check_traceable_decode(action_pipeline(GrootN17ActionDecodeStep()))
+
+@pytest.mark.parametrize(
+    "backend", ["executorch_tensorrt", "torch_tensorrt", "executorch_cuda", "onnx_tensorrt"]
+)
+def test_numpy_action_decoding_is_refused_only_where_it_cannot_compile(recipe, backend):
+    from lerobot.policies.groot.processor_groot import GrootActionUnpackUnnormalizeStep
+
+    recipe.check_traceable_decode(action_pipeline(GrootActionUnpackUnnormalizeStep()), backend)
+    if backend == "onnx_tensorrt":
+        recipe.check_traceable_decode(action_pipeline(n17_decoder()), backend)
+    else:
+        with pytest.raises(ValueError, match="only the ONNX-TensorRT route"):
+            recipe.check_traceable_decode(action_pipeline(n17_decoder()), backend)
+    with pytest.raises(ValueError, match="relative actions"):
+        recipe.check_traceable_decode(action_pipeline(n17_decoder(relative=True)), backend)
+
+
+def test_numpy_action_decoding_exports_to_onnx_and_follows_new_actions(recipe, tmp_path):
+    onnxruntime = pytest.importorskip("onnxruntime")
+    pytest.importorskip("onnxscript")
+
+    module = recipe.GrootActions(2, 3, action_pipeline(n17_decoder())).eval()
+    actions, state = torch.rand(4, 3) * 2 - 1, torch.zeros(3)
+    path = tmp_path / "actions.onnx"
+    torch.onnx.export(
+        module, (actions, state), path, dynamo=True, input_names=["x", "state"], output_names=["a"]
+    )
+    session = onnxruntime.InferenceSession(str(path), providers=["CPUExecutionProvider"])
+    moved = torch.rand(4, 3) * 2 - 1
+    with torch.no_grad():
+        expected = module(moved, state).numpy()
+    np.testing.assert_allclose(
+        session.run(None, {"x": moved.numpy(), "state": state.numpy()})[0], expected, atol=1e-6
+    )
+
+
+@pytest.mark.parametrize(
+    "shape,names",
+    [((12, 16, 3), ["height", "width", "channels"]), ((3, 12, 16), ["channels", "height", "width"])],
+)
+def test_robot_frame_cameras_are_hwc_whatever_the_dataset_layout(recipe, shape, names):
+    smolvla = importlib.import_module("smolvla_recipe")
+    features = {
+        "observation.images.front": {"dtype": "video", "shape": shape, "names": names},
+        "observation.state": {"dtype": "float32", "shape": (6,), "names": None},
+        "action": {"dtype": "float32", "shape": (6,), "names": None},
+    }
+    frame = smolvla.random_robot_frame(features)
+    assert frame["observation.images.front"].shape == (12, 16, 3)
+    assert frame["observation.images.front"].dtype == np.uint8
+    assert frame["observation.state"].shape == (6,) and "action" not in frame
 
 
 def test_task_must_be_one_of_the_dataset_tasks(recipe):

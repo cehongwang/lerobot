@@ -170,7 +170,11 @@ def random_robot_frame(features: dict[str, dict]) -> dict[str, np.ndarray]:
         if not name.startswith(f"{OBS_STR}."):
             continue
         if feature["dtype"] in ("image", "video"):
-            frame[name] = np.random.randint(0, 256, feature["shape"], dtype=np.uint8)
+            shape = feature["shape"]
+            # The robot's cameras give HWC frames; a dataset may store the shape channel first.
+            if feature["names"][2] not in ("channel", "channels"):
+                shape = (shape[1], shape[2], shape[0])
+            frame[name] = np.random.randint(0, 256, shape, dtype=np.uint8)
         else:
             frame[name] = np.random.rand(*feature["shape"]).astype(np.float32)
     return frame
