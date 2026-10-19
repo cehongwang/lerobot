@@ -23,11 +23,13 @@ returns actions in robot units. The folder also keeps a test case, which the rol
 """
 
 import argparse
+import dataclasses
 import datetime as dt
 import gc
 import json
 import time
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import torch
@@ -38,7 +40,12 @@ from lerobot.configs.policies import PreTrainedConfig
 from lerobot.inference import SyncInferenceEngine
 from lerobot.policies.act.modeling_act import ACTPolicy
 from lerobot.policies.factory import make_pre_post_processors
-from lerobot.processor import PolicyProcessorPipeline
+from lerobot.processor import (
+    AbsoluteActionsProcessorStep,
+    DeviceProcessorStep,
+    PolicyProcessorPipeline,
+    to_absolute_actions,
+)
 from lerobot.utils.constants import ACTION
 
 TEST_CASE = "test_case.safetensors"
@@ -72,6 +79,30 @@ def to_policy_input(name: str, x: Tensor) -> Tensor:
     if "image" in name:
         x = (x.float() / 255).permute(2, 0, 1)
     return x.unsqueeze(0)
+
+
+def anchored_postprocessor(postprocessor: PolicyProcessorPipeline) -> tuple[PolicyProcessorPipeline, Any]:
+    """The postprocessor's steps before its relative-to-absolute step, and that step.
+
+    That step adds the state the preprocessor cached in Python, which an exported program would keep as
+    a constant. A program applies it to the state it takes as an input instead, with `absolute_actions`.
+    """
+    steps = list(postprocessor.steps)
+    index = next(
+        (i for i, s in enumerate(steps) if isinstance(s, AbsoluteActionsProcessorStep) and s.enabled), None
+    )
+    if index is None:
+        return postprocessor, None
+    if index != len(steps) - 1 and not all(isinstance(s, DeviceProcessorStep) for s in steps[index + 1 :]):
+        raise ValueError("The relative-to-absolute action step must be the postprocessor's last step.")
+    return dataclasses.replace(postprocessor, steps=steps[:index]), steps[index]
+
+
+def absolute_actions(actions: Tensor, state: Tensor, step: Any) -> Tensor:
+    """`step`'s relative-to-absolute conversion of a (batch, steps, joints) chunk, around `state`."""
+    if step is None:
+        return actions
+    return to_absolute_actions(actions, state, step.relative_step._build_mask(actions.shape[-1]))
 
 
 class ACTExport:

@@ -39,7 +39,15 @@ from copy import copy
 from pathlib import Path
 
 import torch
-from act_recipe import TEST_CASE, gpu_processors, make_output_dir, random_robot_frame, to_policy_input
+from act_recipe import (
+    TEST_CASE,
+    absolute_actions,
+    anchored_postprocessor,
+    gpu_processors,
+    make_output_dir,
+    random_robot_frame,
+    to_policy_input,
+)
 from safetensors.numpy import save_file
 from smolvla_recipe import NOISE
 from torch import Tensor, nn
@@ -218,16 +226,20 @@ class PI05Step(nn.Module):
 
 
 class PI05Actions(nn.Module):
-    """The end of the chunk: the denoised actions in, the actions to play out."""
+    """The end of the chunk: the denoised actions and the robot's state in, the actions to play out.
+
+    A policy trained on actions relative to the state turns them back around the state it takes here.
+    """
 
     def __init__(self, policy: PI05Policy, postprocessor: PolicyProcessorPipeline):
         super().__init__()
         self.policy = policy
-        self.postprocessor = postprocessor
+        self.postprocessor, self.absolute_step = anchored_postprocessor(postprocessor)
 
-    def forward(self, x_0: Tensor) -> Tensor:
+    def forward(self, x_0: Tensor, state: Tensor) -> Tensor:
         action_dim = self.policy.config.output_features[ACTION].shape[0]
-        return self.postprocessor(x_0[None, : self.policy.config.n_action_steps, :action_dim])[0]
+        actions = self.postprocessor(x_0[None, : self.policy.config.n_action_steps, :action_dim])
+        return absolute_actions(actions, state[None], self.absolute_step)[0]
 
 
 class PI05Embed(nn.Module):
@@ -405,9 +417,10 @@ class PI05Export:
         del step
         free_memory()
         actions = PI05Actions(self.load_part(), self.postprocessor)
+        state = torch.from_numpy(self.frame[OBS_STATE]).cuda()
         with torch.no_grad():
-            self.expected_actions = actions(x_t).cpu().numpy()
-        yield "actions", actions, (self.noise,), ["x_t"], [ACTION]
+            self.expected_actions = actions(x_t, state).cpu().numpy()
+        yield "actions", actions, (self.noise, state), ["x_t", OBS_STATE], [ACTION]
 
     def write(
         self, programs: dict[str, dict], device_resident: bool = False, cuda_graphs: bool = False

@@ -101,6 +101,19 @@ def recipe(monkeypatch):
     return importlib.import_module("groot_recipe")
 
 
+def action_pipeline(*steps):
+    """A postprocessor that takes and returns an action tensor, as the policies' own do."""
+    from lerobot.processor import (
+        PolicyProcessorPipeline,
+        policy_action_to_transition,
+        transition_to_policy_action,
+    )
+
+    return PolicyProcessorPipeline(
+        steps=list(steps), to_transition=policy_action_to_transition, to_output=transition_to_policy_action
+    )
+
+
 def tiny_head(alternate=True, interleave=True, num_layers=5):
     from lerobot.policies.groot.groot_n1_7 import GR00TN17ActionHead, GR00TN17Config
 
@@ -297,15 +310,15 @@ def test_step_slices_and_program_chain_match_action_head(recipe, alternate, inte
             return result.numpy()
 
     programs = {f"step_{i}": Program(part, f"step_{i}") for i, part in enumerate(parts)}
-    programs["actions"] = Program(recipe.GrootActions(2, 3, torch.nn.Identity()), "actions")
+    programs["actions"] = Program(recipe.GrootActions(2, 3, action_pipeline()), "actions")
     names = {
         "step_0": (["vl", "state", "x_t", "time"], ["hidden", "temb"]),
         "step_1": (["vl", "hidden", "temb"], ["hidden"]),
         "step_2": (["vl", "hidden", "temb"], ["velocity"]),
-        "actions": (["x_t"], ["actions"]),
+        "actions": (["x_t", "robot_state"], ["actions"]),
     }
     info = {
-        "inputs": ["vl", "state", "noise"],
+        "inputs": ["vl", "state", "robot_state", "noise"],
         "num_steps": 3,
         "dt": 1 / 3,
         "timesteps": [0, 333, 666],
@@ -314,7 +327,7 @@ def test_step_slices_and_program_chain_match_action_head(recipe, alternate, inte
         },
     }
     chain = ProgramChain(programs, info)
-    actual = chain.initialize(features.numpy(), state.numpy(), noise.numpy())
+    actual = chain.initialize(features.numpy(), state.numpy(), np.zeros(6, np.float32), noise.numpy())
     np.testing.assert_allclose(actual, expected[:2, :3].numpy(), rtol=0, atol=1e-6)
     assert calls == ["step_0", "step_1", "step_2"] * 3 + ["actions"]
     inputs = (features, state, noise, torch.tensor([333.0]))
@@ -505,15 +518,54 @@ def test_part_loader_preserves_precision_without_changing_policy_config(recipe, 
 
 
 def test_actions_apply_the_postprocessor_after_slicing(recipe):
-    class Postprocessor(torch.nn.Module):
-        def forward(self, actions):
-            return actions * 7 + 3
+    from lerobot.processor import ProcessorStep, TransitionKey
 
-    part = recipe.GrootActions(2, 3, Postprocessor())
+    class ScaleByHorizon(ProcessorStep):
+        """Depends on the chunk's length, so slicing after it gives a different answer than before it."""
+
+        def __call__(self, transition):
+            actions = transition[TransitionKey.ACTION]
+            return {**transition, TransitionKey.ACTION: actions * actions.shape[1] + 3}
+
+        def transform_features(self, features):
+            return features
+
+    part = recipe.GrootActions(2, 3, action_pipeline(ScaleByHorizon()))
     values = torch.arange(20).reshape(4, 5).float()
-    torch.testing.assert_close(part(values), values[:2, :3] * 7 + 3)
-    saved = torch.export.export(part, (values,)).module()(values)
-    torch.testing.assert_close(saved, part(values))
+    state = torch.zeros(6)
+    torch.testing.assert_close(part(values, state), values[:2, :3] * 2 + 3)
+    saved = torch.export.export(part, (values, state)).module()(values, state)
+    torch.testing.assert_close(saved, part(values, state))
+
+
+def test_numpy_action_decoding_is_refused_before_any_part_is_built(recipe):
+    from lerobot.policies.groot.processor_groot import (
+        GrootActionUnpackUnnormalizeStep,
+        GrootN17ActionDecodeStep,
+    )
+
+    recipe.check_traceable_decode(action_pipeline(GrootActionUnpackUnnormalizeStep()))
+    with pytest.raises(ValueError, match="cannot be exported"):
+        recipe.check_traceable_decode(action_pipeline(GrootN17ActionDecodeStep()))
+
+
+@pytest.mark.parametrize("policy", ["pi05", "groot"])
+def test_relative_actions_follow_the_robot_state_after_export(recipe, policy):
+    from lerobot.processor import AbsoluteActionsProcessorStep, RelativeActionsProcessorStep, TransitionKey
+
+    relative = RelativeActionsProcessorStep(enabled=True)
+    relative({TransitionKey.OBSERVATION: {"observation.state": torch.full((1, 3), 50.0)}})
+    postprocessor = action_pipeline(AbsoluteActionsProcessorStep(enabled=True, relative_step=relative))
+    if policy == "groot":
+        part = recipe.GrootActions(2, 3, postprocessor)
+    else:
+        pi05 = importlib.import_module("pi05_recipe")
+        config = SimpleNamespace(n_action_steps=2, output_features={"action": SimpleNamespace(shape=(3,))})
+        part = pi05.PI05Actions(SimpleNamespace(config=config), postprocessor)
+    offsets = torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]])
+    program = torch.export.export(part, (offsets, torch.full((3,), 50.0))).module()
+    moved = torch.tensor([-5.0, 0.0, 5.0])
+    torch.testing.assert_close(program(offsets, moved), offsets[:2] + moved)
 
 
 @pytest.mark.parametrize("backend", ["onnx_tensorrt", "torch_tensorrt"])

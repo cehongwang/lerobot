@@ -41,7 +41,14 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn.functional as F  # noqa: N812
-from act_recipe import TEST_CASE, gpu_processors, make_output_dir, to_policy_input
+from act_recipe import (
+    TEST_CASE,
+    absolute_actions,
+    anchored_postprocessor,
+    gpu_processors,
+    make_output_dir,
+    to_policy_input,
+)
 from safetensors.numpy import save_file
 from smolvla_recipe import random_robot_frame
 from torch import Tensor, nn
@@ -53,7 +60,11 @@ from lerobot.datasets import LeRobotDatasetMetadata
 from lerobot.inference.export.images import resize_images
 from lerobot.policies.groot.groot_n1_7 import CategorySpecificLinear, GR00TN17Config
 from lerobot.policies.groot.modeling_groot import GrootPolicy
-from lerobot.policies.groot.processor_groot import GrootN17PackInputsStep, GrootN17VLMEncodeStep
+from lerobot.policies.groot.processor_groot import (
+    GrootN17ActionDecodeStep,
+    GrootN17PackInputsStep,
+    GrootN17VLMEncodeStep,
+)
 from lerobot.policies.utils import prepare_observation_for_inference
 from lerobot.processor import PolicyProcessorPipeline
 from lerobot.utils.constants import ACTION, OBS_IMAGES, OBS_STATE
@@ -492,16 +503,33 @@ class GrootStep(nn.Module):
             return (hidden, temb) if self.start == 0 else hidden
 
 
+def check_traceable_decode(postprocessor: PolicyProcessorPipeline) -> None:
+    """Refuse at the start a checkpoint whose action decoding no compiled program can carry.
+
+    GR00T N1.7 checkpoints with statistics for their embodiment decode actions in NumPy, which
+    torch.export cannot trace, so the export would otherwise fail at its last part after hours.
+    """
+    if any(isinstance(s, GrootN17ActionDecodeStep) for s in postprocessor.steps):
+        raise ValueError(
+            "This checkpoint decodes its actions with GrootN17ActionDecodeStep, which runs in NumPy and "
+            "cannot be exported. Export a checkpoint whose statistics come from its training dataset."
+        )
+
+
 class GrootActions(nn.Module):
-    """The end of the chunk: the denoised actions in, the actions to play out, in robot units."""
+    """The end of the chunk: the denoised actions and the robot's state in, the actions to play out, in robot units.
+
+    A policy trained on actions relative to the state turns them back around the state it takes here.
+    """
 
     def __init__(self, horizon: int, action_dim: int, postprocessor: PolicyProcessorPipeline):
         super().__init__()
         self.horizon, self.action_dim = horizon, action_dim
-        self.postprocessor = postprocessor
+        self.postprocessor, self.absolute_step = anchored_postprocessor(postprocessor)
 
-    def forward(self, actions: Tensor) -> Tensor:
-        return self.postprocessor(actions[None, : self.horizon, : self.action_dim])[0]
+    def forward(self, actions: Tensor, state: Tensor) -> Tensor:
+        actions = self.postprocessor(actions[None, : self.horizon, : self.action_dim])
+        return absolute_actions(actions, state[None], self.absolute_step)[0]
 
 
 class GrootChunk(nn.Module):
@@ -519,8 +547,9 @@ class GrootChunk(nn.Module):
         backbone = model.backbone
         qwen = backbone.model.model
         self.action_head = model.action_head
-        self.postprocessor = postprocessor
+        self.postprocessor, self.absolute_step = anchored_postprocessor(postprocessor)
         self.preprocessor = preprocessor
+        self.state_index = preprocessor.frame_names.index(OBS_STATE)
         self.use_bf16 = policy.config.use_bf16
         self.horizon = policy._action_queue_steps
         self.action_dim = policy.config.output_features[ACTION].shape[0]
@@ -575,7 +604,8 @@ class GrootChunk(nn.Module):
             )
             action_input = BatchFeature(data={"state": state, "embodiment_id": self.embodiment_id})
             actions = self.action_head.get_action(backbone_output, action_input, noise=noise[None])
-        return self.postprocessor(actions["action_pred"][:, : self.horizon, : self.action_dim])[0]
+        actions = self.postprocessor(actions["action_pred"][:, : self.horizon, : self.action_dim])
+        return absolute_actions(actions, frame[self.state_index][None], self.absolute_step)[0]
 
 
 class GrootExport:
@@ -591,6 +621,7 @@ class GrootExport:
         self.policy = GrootPolicy.from_pretrained(self.policy_path).to("cuda").eval()
         self.config = self.policy.config
         preprocessor, postprocessor = gpu_processors(self.policy.config, self.policy_path)
+        check_traceable_decode(postprocessor)
         self.read_dataset(args)
         batch = preprocessor(self.observation())
         model = self.policy._groot_model
@@ -619,6 +650,7 @@ class GrootExport:
         self.model_config = model.config
         self.horizon = self.policy._action_queue_steps
         preprocessor, self.postprocessor = gpu_processors(self.config, self.policy_path)
+        check_traceable_decode(self.postprocessor)
         self.read_dataset(args)
         self.batch = preprocessor(self.observation())
         self.frame_processor = GrootObservation(preprocessor, self.frame, self.batch).cuda()
@@ -783,9 +815,10 @@ class GrootExport:
                 del module
         free_memory()
         module = GrootActions(self.horizon, self.config.output_features[ACTION].shape[0], self.postprocessor)
+        state = torch.from_numpy(self.frame[OBS_STATE]).cuda()
         with torch.no_grad():
-            self.expected_actions = module(actions).float().cpu().numpy()
-        yield "actions", module, (actions,), ["x_t"], [ACTION]
+            self.expected_actions = module(actions, state).float().cpu().numpy()
+        yield "actions", module, (actions, state), ["x_t", OBS_STATE], [ACTION]
 
     def release_policy(self) -> None:
         """Free the policy before the backend compiles; the test case's actions are already computed."""
