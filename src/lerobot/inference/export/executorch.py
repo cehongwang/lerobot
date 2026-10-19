@@ -19,6 +19,8 @@ from typing import Any
 
 import numpy as np
 
+from lerobot.utils.import_utils import require_package
+
 
 class ExecuTorchProgram:
     """Run a `.pte` program with host arrays and read its outputs through DLPack."""
@@ -113,6 +115,7 @@ def to_numpy(tensor) -> np.ndarray:
 
     tensor = tensor.cpu()
     if tensor.dtype == torch.bfloat16:
+        require_package("ml-dtypes", extra="export", import_name="ml_dtypes")
         from ml_dtypes import bfloat16
 
         return tensor.view(torch.uint16).numpy().view(bfloat16).copy()

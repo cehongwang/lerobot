@@ -19,6 +19,8 @@ from pathlib import Path
 
 import numpy as np
 
+from lerobot.utils.import_utils import require_package
+
 # Limit the host copy while TensorRT reads a large engine.
 READ_CHUNK_BYTES = 64 << 20
 
@@ -26,6 +28,7 @@ READ_CHUNK_BYTES = 64 << 20
 @functools.cache
 def cuda_runtime():
     """The CUDA runtime bindings, imported on first use so the module loads without them."""
+    require_package("cuda-bindings", extra="export", import_name="cuda")
     from cuda.bindings import runtime
 
     return runtime
@@ -147,6 +150,7 @@ def numpy_dtype(dtype):
     import tensorrt as trt
 
     if dtype == trt.bfloat16:
+        require_package("ml-dtypes", extra="export", import_name="ml_dtypes")
         from ml_dtypes import bfloat16
 
         return np.dtype(bfloat16)
