@@ -71,6 +71,36 @@ def test_camera_geometry_letterbox_and_unrelated_arrays():
     assert frame["camera"] is image
 
 
+@pytest.mark.parametrize("letterbox", [False, True])
+def test_camera_geometry_matches_the_policy_image_transform(letterbox):
+    """Every step changes the image: an odd letterbox pad, a resize to the edge, a crop, a resize to the target."""
+    import torch
+
+    pytest.importorskip("torchvision")
+    from lerobot.policies.groot.processor_groot import _transform_n1_7_image_for_vlm_torch
+
+    image = np.random.default_rng(3).integers(0, 256, (21, 30, 3), dtype=np.uint8)
+    geometry = {
+        "cameras": ["camera"],
+        "target_size": [12, 12],
+        "resize_edge": 17,
+        "crop_fraction": 0.75,
+        "letterbox": letterbox,
+        "image_size": [12, 12],
+    }
+    expected = _transform_n1_7_image_for_vlm_torch(
+        torch.from_numpy(image).permute(2, 0, 1),
+        image_crop_size=None,
+        image_target_size=geometry["target_size"],
+        shortest_image_edge=geometry["resize_edge"],
+        crop_fraction=geometry["crop_fraction"],
+        letter_box_transform=letterbox,
+    )
+    actual = resize_images({"camera": image}, geometry)["camera"]
+    difference = np.abs(actual.astype(np.int16) - expected.permute(1, 2, 0).numpy().astype(np.int16))
+    assert difference.max() <= 2, difference.max()
+
+
 def test_runtime_resizes_both_startup_and_live_frames(tmp_path, monkeypatch):
     image = np.arange(108, dtype=np.uint8).reshape(6, 6, 3)
     state = np.arange(3, dtype=np.float32)

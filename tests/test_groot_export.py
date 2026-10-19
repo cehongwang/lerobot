@@ -59,6 +59,43 @@ def test_patch_packing_preserves_order_with_at_most_eight_dimensions(monkeypatch
     assert max(ranks) <= 8
 
 
+@pytest.mark.parametrize("mode", ["normalize", "rescale"])
+def test_patch_packing_normalizes_images_and_state(monkeypatch, mode):
+    pytest.importorskip("transformers")
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "examples" / "export"))
+    from groot_recipe import GrootObservation
+
+    mean, std, factor = torch.tensor([0.4, 0.5, 0.6]), torch.tensor([0.2, 0.25, 0.3]), 1 / 255
+    low, span = torch.tensor([-1.0, 0.0, 2.0]), torch.tensor([2.0, 4.0, 0.0])
+
+    class Observation(GrootObservation):
+        def __init__(self):
+            torch.nn.Module.__init__(self)
+            self.frame_processor = torch.nn.Identity()
+            self.cameras = ["observation.images.camera"]
+            self.frame_names = [*self.cameras, "observation.state"]
+            self.normalize, self.rescale = mode == "normalize", mode == "rescale"
+            self.rescale_factor = factor
+            self.register_buffer("image_mean", (mean / factor)[None, :, None, None])
+            self.register_buffer("image_std", (std / factor)[None, :, None, None])
+            self.normalize_state = self.clip_state = True
+            self.register_buffer("state_min", low)
+            self.register_buffer("state_nonzero", span != 0)
+            self.register_buffer("state_span", torch.where(span != 0, span, torch.ones_like(span)))
+            self.patch_size = self.temporal_patch_size = self.merge_size = 1
+            self.grid_h = self.grid_w = 2
+            self.max_state_dim = 4
+
+    raw = torch.tensor([[[0, 64, 128], [255, 32, 16]], [[8, 200, 100], [50, 150, 250]]], dtype=torch.uint8)
+    state = torch.tensor([0.0, 9.0, 2.0])
+    pixels, packed = Observation()(raw, state)
+    images = (raw.float() / 255 * 255).trunc()
+    expected = (images - mean / factor) / (std / factor) if mode == "normalize" else images * factor
+    torch.testing.assert_close(pixels, expected.reshape(-1, 3), rtol=0, atol=1e-5)
+    # (0 - -1) / 2 * 2 - 1 = 0, (9 - 0) / 4 * 2 - 1 = 3.5 clipped to 1, and a zero span maps to 0.
+    torch.testing.assert_close(packed, torch.tensor([[[0.0, 1.0, 0.0, 0.0]]]), rtol=0, atol=1e-6)
+
+
 def observation_for(monkeypatch, frame_cameras, video_keys, rename_map=None):
     """A GrootObservation built from real rename and packing steps, for `frame_cameras` and the checkpoint's `video_keys`."""
     from types import SimpleNamespace

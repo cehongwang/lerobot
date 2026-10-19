@@ -568,6 +568,9 @@ def test_export_parts_saves_the_device_contract(recipe, monkeypatch, tmp_path, d
     assert info["device_resident"] is device_resident
     assert info["programs"]["actions"]["file"] == "actions.pte"
     assert info["dt"] == 0.5 and info["timesteps"] == [0, 500]
+    # The task is baked into the programs and the frame goes in raw, so the engine must know both.
+    assert info["task"] == "pick" and info["task_fixed"] is True
+    assert info["raw_frame"] is True
 
 
 def test_part_loader_preserves_precision_without_changing_policy_config(recipe, monkeypatch):
