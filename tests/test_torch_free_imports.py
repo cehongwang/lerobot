@@ -89,9 +89,8 @@ def test_imports_without_torch(module):
     assert result.returncode == 0, result.stderr
 
 
-@pytest.mark.parametrize("raw_frame", [False, True])
-@pytest.mark.parametrize("input_type", ["numpy", "dlpack", "torch"])
-def test_act_export_config_and_engine_input_compatibility(tmp_path, raw_frame, input_type):
+def test_executorch_export_runs_without_importing_torch(tmp_path):
+    """With torch installed, the rollout reads an ExecuTorch-TensorRT folder and runs it without importing torch."""
     code = r"""
 import json
 import sys
@@ -103,18 +102,23 @@ import numpy as np
 from safetensors.numpy import save_file
 
 from lerobot.configs import parser
-from lerobot.rollout.configs import RolloutConfig
 from lerobot.inference.export import ExportInferenceEngine
 from lerobot.robots.config import RobotConfig
+from lerobot.rollout.configs import RolloutConfig
 
 folder = Path(sys.argv[1])
-raw_frame = sys.argv[2] == "True"
-input_type = sys.argv[3]
-calls = []
 info = {
-    "backend": "executorch_cuda", "file": "model.pte",
+    "backend": "executorch_tensorrt",
+    "programs": {
+        "model": {
+            "file": "model.pte",
+            "inputs": ["observation.state", "observation.images.camera"],
+            "outputs": ["action"],
+        }
+    },
     "inputs": ["observation.state", "observation.images.camera"],
-    "output": "action", "test_case": "case.safetensors", "tolerance": 0.0,
+    "test_case": "case.safetensors",
+    "tolerance": 0.0,
 }
 (folder / "export.json").write_text(json.dumps(info))
 (folder / "config.json").write_text(json.dumps({
@@ -128,33 +132,39 @@ save_file({"observation.state": state, "observation.images.camera": image,
            "expected_actions": np.array([[2.0], [4.0]], dtype=np.float32)},
           folder / "case.safetensors")
 
+
+class Result:
+    # Stands in for ExecuTorch's own result: device memory with a host copy on request.
+    dtype_name = "float32"
+
+    def __init__(self, array):
+        self.array, self.shape = array, array.shape
+
+    @classmethod
+    def from_host(cls, array):
+        return cls(np.array(array))
+
+    def to_host(self):
+        return self.array
+
+    def __dlpack_device__(self):
+        return (2, 0)
+
+
 class Method:
-    metadata = SimpleNamespace(input_tensor_meta=lambda i: SimpleNamespace(
-        sizes=lambda: (1,) if raw_frame else (1, 1)))
-
     def execute(self, inputs):
-        calls.append(type(inputs[0]).__module__)
-        if input_type == "torch":
-            if isinstance(inputs[0], np.ndarray):
-                raise RuntimeError("Unsupported python type <class 'numpy.ndarray'>. "
-                                   "Ensure that inputs are passed as a flat list of tensors.")
-            inputs = [value.numpy() for value in inputs]
-        elif input_type == "dlpack":
-            inputs = [np.from_dlpack(value) for value in inputs]
-        state, image = inputs
-        assert isinstance(state, np.ndarray)
-        if raw_frame:
-            assert state.shape == (1,)
-            assert image.shape == (2, 2, 3) and image.dtype == np.uint8
-            np.testing.assert_array_equal(image, 255)
-        else:
-            assert state.shape == (1, 1)
-            assert image.shape == (1, 3, 2, 2) and image.dtype == np.float32
-            np.testing.assert_array_equal(image, 1.0)
-        return [np.stack([state, 2 * state], axis=0 if raw_frame else 1)]
+        assert all(isinstance(value, Result) for value in inputs)
+        state, image = (value.array for value in inputs)
+        assert image.shape == (2, 2, 3) and image.dtype == np.uint8
+        return [Result(np.stack([state, 2 * state]))]
 
-runtime = SimpleNamespace(load_program=lambda *a, **kw: SimpleNamespace(load_method=lambda n: Method()))
-sys.modules["executorch.runtime"] = SimpleNamespace(Runtime=SimpleNamespace(get=lambda: runtime))
+
+runtime = SimpleNamespace(
+    load_program=lambda path: SimpleNamespace(load_method=lambda name: Method()),
+    backend_registry=SimpleNamespace(set_option=lambda backend, options: None),
+)
+sys.modules["executorch.runtime"] = SimpleNamespace(Runtime=SimpleNamespace(get=lambda: runtime), ExecuTorchResult=Result)
+sys.modules["torch_tensorrt_executorch_runtime"] = SimpleNamespace()
 
 @RobotConfig.register_subclass("test_export_robot")
 @dataclass
@@ -168,19 +178,15 @@ def parse_config(cfg: RolloutConfig):
 sys.argv = ["lerobot-rollout", f"--policy.path={folder}", "--robot.type=test_export_robot"]
 cfg = parse_config()
 assert cfg.policy.type == "act" and cfg.policy.action_feature_names == ["joint.pos"]
-assert "torch" not in sys.modules
 engine = ExportInferenceEngine(folder, task="", robot_type="test_export_robot")
-assert calls == (["numpy", "torch"] if input_type == "torch" else ["numpy"])
 frame = {"observation.state": state, "observation.images.camera": image}
 np.testing.assert_array_equal(engine.get_action(frame), [2.0])
 np.testing.assert_array_equal(engine.get_action(frame), [4.0])
-assert calls == (["numpy", "torch", "torch"] if input_type == "torch" else ["numpy", "numpy"])
-assert ("torch" in sys.modules) == (input_type == "torch")
+import os
+assert os.environ["EXECUTORCH_PYBINDINGS_TENSOR_OUTPUT"] == "executorch"
+assert "torch" not in sys.modules
 """
     result = subprocess.run(
-        [sys.executable, "-c", code, str(tmp_path), str(raw_frame), input_type],
-        capture_output=True,
-        text=True,
-        timeout=300,
+        [sys.executable, "-c", code, str(tmp_path)], capture_output=True, text=True, timeout=300
     )
     assert result.returncode == 0, result.stderr

@@ -12,8 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Run an exported policy's ExecuTorch program, on its TensorRT or CUDA backend."""
+"""Run an exported policy's ExecuTorch programs on TensorRT, without PyTorch."""
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -21,102 +22,52 @@ import numpy as np
 
 from lerobot.utils.import_utils import require_package
 
+# ExecuTorch returns its own results rather than torch tensors, even where torch is installed, so running
+# a program never imports torch. The bindings read this once, when they first load.
+os.environ.setdefault("EXECUTORCH_PYBINDINGS_TENSOR_OUTPUT", "executorch")
+
 
 class ExecuTorchProgram:
-    """Run a `.pte` program with host arrays and read its outputs through DLPack."""
+    """Run a `.pte` program whose inputs and outputs live on the GPU.
 
-    def __init__(self, path: Path, tensorrt: bool = True, shared_scratch: bool = False):
-        if tensorrt:
-            import torch_tensorrt_executorch_runtime  # noqa: F401
+    `run_device` keeps its outputs on the GPU, so the next program in a chain reads them where they are.
+    Calling the program takes and returns host arrays.
+    """
+
+    def __init__(self, path: Path, shared_scratch: bool = False):
+        import torch_tensorrt_executorch_runtime  # noqa: F401  # registers the TensorRT backend
         from executorch.runtime import Runtime
 
         runtime = Runtime.get()
-        # Engines read this process-wide option when they load; older runtimes keep one scratch per engine.
-        if tensorrt and hasattr(runtime.backend_registry, "set_option"):
-            runtime.backend_registry.set_option(
-                "TensorRTBackend", {"use_shared_activation_scratch": shared_scratch}
-            )
-        data_path = next(path.parent.glob("*.ptd"), None)
-        self._method = runtime.load_program(path, data_path=data_path).load_method("forward")
-        self._torch_inputs = False
-
-    @property
-    def input_shape(self) -> tuple[int, ...]:
-        return tuple(self._method.metadata.input_tensor_meta(0).sizes())
-
-    def initialize(self, *inputs: np.ndarray) -> np.ndarray | tuple[np.ndarray, ...]:
-        """Select the input type while running the saved test case at load time."""
-        try:
-            return self(*inputs)
-        except (TypeError, RuntimeError) as error:
-            if "Unsupported python type <class 'numpy.ndarray'>" not in str(error):
-                raise
-        self._torch_inputs = True
-        return self(*inputs)
-
-    def __call__(self, *inputs: np.ndarray) -> np.ndarray | tuple[np.ndarray, ...]:
-        arrays = [np.ascontiguousarray(value) for value in inputs]
-        if self._torch_inputs:
-            arrays = [to_torch(value) for value in arrays]
-        outputs = self._method.execute(arrays)
-        result = []
-        for output in outputs:
-            if output.__dlpack_device__()[0] == 1:
-                try:
-                    result.append(np.from_dlpack(output).copy())
-                    continue
-                except (BufferError, RuntimeError):
-                    # NumPy cannot consume every DLPack dtype, including bfloat16.
-                    pass
-            import torch
-
-            result.append(to_numpy(torch.from_dlpack(output)))
-        return result[0] if len(result) == 1 else tuple(result)
-
-
-class DeviceResidentProgram(ExecuTorchProgram):
-    """Run a `.pte` program exported to take and return CUDA tensors, with no copies at its boundary.
-
-    `run_device` returns the outputs as CUDA torch tensors, which the next program in a chain reads as they are.
-    """
+        # The programs of a chain run one after another, so they can share one activation scratch.
+        runtime.backend_registry.set_option(
+            "TensorRTBackend", {"use_shared_activation_scratch": shared_scratch}
+        )
+        self._method = runtime.load_program(path).load_method("forward")
 
     def run_device(self, *inputs: np.ndarray | Any) -> tuple[Any, ...]:
-        import torch
+        from executorch.runtime import ExecuTorchResult
 
-        tensors = [
-            value if isinstance(value, torch.Tensor) else to_torch(np.ascontiguousarray(value)).cuda()
+        # A host array is copied to the GPU; a result already there passes straight through.
+        on_device = [
+            ExecuTorchResult.from_host(np.ascontiguousarray(value))
+            if isinstance(value, np.ndarray)
+            else value
             for value in inputs
         ]
-        # The delegate runs on its own CUDA stream, so the PyTorch work that wrote the inputs must finish first.
-        torch.cuda.current_stream().synchronize()
-        # ExecuTorch can return DLPack objects instead of tensors; from_dlpack shares their GPU memory.
-        return tuple(
-            output if isinstance(output, torch.Tensor) else torch.from_dlpack(output)
-            for output in self._method.execute(tensors)
-        )
+        return tuple(self._method.execute(on_device))
 
     def __call__(self, *inputs: np.ndarray | Any) -> np.ndarray | tuple[np.ndarray, ...]:
-        outputs = [to_numpy(value) for value in self.run_device(*inputs)]
+        outputs = [to_host(value) for value in self.run_device(*inputs)]
         return outputs[0] if len(outputs) == 1 else tuple(outputs)
 
 
-def to_torch(array: np.ndarray):
-    """A torch tensor sharing the array's memory; PyTorch cannot read NumPy's bfloat16 extension dtype."""
-    import torch
-
-    if array.dtype.name == "bfloat16":
-        return torch.from_numpy(array.view(np.uint16)).view(torch.bfloat16)
-    return torch.from_numpy(array)
-
-
-def to_numpy(tensor) -> np.ndarray:
-    """A host copy of the tensor; NumPy reads bfloat16 through the ml_dtypes extension dtype."""
-    import torch
-
-    tensor = tensor.cpu()
-    if tensor.dtype == torch.bfloat16:
+def to_host(result: Any) -> np.ndarray:
+    """A host copy of a program's result. NumPy has no bfloat16, so ml_dtypes reads its raw bytes."""
+    host = np.asarray(result.to_host())
+    if result.dtype_name == "bfloat16":
         require_package("ml-dtypes", extra="export", import_name="ml_dtypes")
         from ml_dtypes import bfloat16
 
-        return tensor.view(torch.uint16).numpy().view(bfloat16).copy()
-    return tensor.numpy().copy()
+        return host.view(np.uint16).view(bfloat16).reshape(result.shape)
+    return host.copy()

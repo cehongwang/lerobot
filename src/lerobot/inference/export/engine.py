@@ -14,11 +14,11 @@
 
 """The inference engine for an exported policy.
 
-An exported folder holds the compiled program, the policy's `config.json`, and an `export.json` naming the
-backend, the program's inputs and a test case. The engine feeds the program the robot's frame (and, for a
-flow-matching policy, fresh noise each chunk) and returns actions in robot units. A folder compiled for one
-task (`task_fixed`) refuses any other task. A policy too large for one program is exported as a chain that
-`ProgramChain` runs in order.
+An exported folder holds the compiled programs, the policy's `config.json`, and an `export.json` that
+lists the programs with their inputs and outputs, and a test case. A whole policy is one program; a
+policy too large to compile at once is a chain. The engine feeds the chain the robot's frame (and, for a
+flow-matching policy, fresh noise each chunk) and returns actions in robot units. A folder compiled for
+one task (`task_fixed`) refuses any other task.
 """
 
 from __future__ import annotations
@@ -27,9 +27,9 @@ import json
 import logging
 import time
 from collections import deque
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import numpy as np
 from safetensors.numpy import load_file
@@ -40,8 +40,15 @@ logger = logging.getLogger(__name__)
 
 EXPORT_INFO = "export.json"
 NOISE = "noise"
+BACKENDS = ("executorch_tensorrt", "onnx_tensorrt", "torch_tensorrt")
 
-Program = Callable[..., np.ndarray]
+
+class Program(Protocol):
+    def run_device(self, *inputs: Any) -> tuple[Any, ...]:
+        """The outputs where the program left them, for the next program to read without a copy."""
+
+    def __call__(self, *inputs: Any) -> np.ndarray | tuple[np.ndarray, ...]:
+        """The outputs as host arrays."""
 
 
 def export_dir(path: str | Path | None) -> Path | None:
@@ -51,137 +58,74 @@ def export_dir(path: str | Path | None) -> Path | None:
     return None
 
 
-def load_program(folder: Path, info: dict) -> Program:
-    """Load the folder's program, or its chain of programs, with the backend `export.json` names."""
+def load_programs(folder: Path, info: dict) -> Mapping[str, Program]:
+    """Load the folder's programs with the backend `export.json` names."""
     backend = info["backend"]
-    if backend not in ("executorch_tensorrt", "executorch_cuda", "onnx_tensorrt", "torch_tensorrt"):
-        raise ValueError(f"Unknown export backend {backend!r} in {folder / EXPORT_INFO}")
-    cuda_graphs = info.get("cuda_graphs", False)
-    if "programs" in info:
-        if backend == "onnx_tensorrt":
-            from .tensorrt import load_engines
-
-            return ProgramChain(load_engines(folder, info["programs"], cuda_graphs), info)
-        files = {name: folder / program["file"] for name, program in info["programs"].items()}
-        device_resident = info.get("device_resident", False)
-        return ProgramChain(
-            {
-                name: load_one(path, backend, device_resident, shared_scratch=True)
-                for name, path in files.items()
-            },
-            info,
-        )
+    programs = info["programs"]
     if backend == "onnx_tensorrt":
-        from .tensorrt import TensorRTEngine
+        from .tensorrt import load_engines
 
-        return TensorRTEngine(
-            folder / info["file"], info["inputs"], [info["output"]], cuda_graphs=cuda_graphs
-        )
-    return load_one(folder / info["file"], backend)
+        return load_engines(folder, programs, info.get("cuda_graphs", False))
+    if backend == "executorch_tensorrt":
+        from .executorch import ExecuTorchProgram
 
-
-def load_one(
-    path: Path, backend: str, device_resident: bool = False, shared_scratch: bool = False
-) -> Program:
-    """Load one ExecuTorch program or AOTInductor package.
-
-    The ExecuTorch-TensorRT programs of a chain share one activation scratch, since they run one after another.
-    """
+        # The programs run one after another, so they can share one activation scratch.
+        return {
+            name: ExecuTorchProgram(folder / p["file"], shared_scratch=True) for name, p in programs.items()
+        }
     if backend == "torch_tensorrt":
         from .aoti import AOTInductorPackage
 
-        return AOTInductorPackage(path)
-    from .executorch import DeviceResidentProgram, ExecuTorchProgram
-
-    program = DeviceResidentProgram if device_resident else ExecuTorchProgram
-    return program(path, tensorrt=backend == "executorch_tensorrt", shared_scratch=shared_scratch)
+        return {name: AOTInductorPackage(folder / p["file"]) for name, p in programs.items()}
+    raise ValueError(
+        f"Unknown export backend {backend!r} in {folder / EXPORT_INFO}; expected one of {BACKENDS}."
+    )
 
 
 class ProgramChain:
-    """Run a chunk exported as a chain of programs, in the order `export.json` lists them.
+    """Run the programs `export.json` lists, in order, each reading earlier values by name.
 
-    Each program reads the frame, the noise, or the outputs of a program before it, by name. The `step`
-    program (or `step_0`, `step_1`, ...) runs once per denoising step, from `timesteps` with step size `dt`.
-    A program with `run_device` hands its outputs to the next one on the GPU. The step's own output does so
-    only in a `device_resident` chain, since the Euler update between steps runs on NumPy arrays otherwise.
+    The frame and the noise are the first values. The programs named in `steps` run once per denoising
+    step, from the noisy actions `x_t` and the `timestep`. The last returns the next noisy actions, `x_next`,
+    which become `x_t`, so no arithmetic runs between programs.
+    Values stay where the programs left them until the last program returns the actions to the host.
     """
 
-    def __init__(self, programs: Mapping[str, Any], info: dict):
-        if info["num_steps"] <= 0:
-            raise ValueError("num_steps must be positive")
+    def __init__(self, programs: Mapping[str, Program], info: dict):
         self._programs = programs
-        self._device_resident = info.get("device_resident", False)
         self._names: list[str] = info["inputs"]
         self._inputs = {name: program["inputs"] for name, program in info["programs"].items()}
         self._outputs = {name: program["outputs"] for name, program in info["programs"].items()}
-        self._steps = [name for name in programs if name == "step" or name.startswith("step_")]
-        self._dt: float = info.get("dt", -1.0 / info["num_steps"])
-        self._timesteps: list[float] = info.get(
-            "timesteps", [1.0 + step * self._dt for step in range(info["num_steps"])]
-        )
-
-    @property
-    def input_shape(self) -> tuple[int, ...] | None:
-        return getattr(next(iter(self._programs.values())), "input_shape", None)
-
-    def initialize(self, *inputs: np.ndarray) -> np.ndarray:
-        return self._run(inputs, initialize=True)
+        self._steps: list[str] = info.get("steps", [])
+        self._timesteps = [np.array([t], dtype=np.float32) for t in info.get("timesteps", [])]
 
     def __call__(self, *inputs: np.ndarray) -> np.ndarray:
-        return self._run(inputs)
-
-    def _run(self, inputs: tuple[np.ndarray, ...], initialize: bool = False) -> np.ndarray:
-        values = dict(zip(self._names, inputs, strict=True))
+        values: dict[str, Any] = dict(zip(self._names, inputs, strict=True))
         *names, last = self._programs
         for name in names:
             if name not in self._steps:
-                self._run_program(name, values, initialize)
+                self._run(name, values)
             elif name == self._steps[0]:
-                self._denoise(values, initialize)
-        return _call(self._programs[last], initialize)(*(values[n] for n in self._inputs[last]))
+                values["x_t"] = values[NOISE]
+                for timestep in self._timesteps:
+                    values["timestep"] = timestep
+                    for step in self._steps:
+                        self._run(step, values)
+                    values["x_t"] = values["x_next"]
+        return self._programs[last](*(values[n] for n in self._inputs[last]))
 
-    def _denoise(self, values: dict, initialize: bool) -> None:
-        *inner, velocity = self._steps
-        sample_name, time_name = self._inputs[self._steps[0]][-2:]
-        sample = values[NOISE]
-        timesteps = np.asarray(self._timesteps, dtype=np.float32)
-        if self._device_resident:
-            import torch
-
-            sample, timesteps = (
-                torch.from_numpy(np.ascontiguousarray(value)).cuda() for value in (sample, timesteps)
-            )
-        for step, timestep in enumerate(timesteps):
-            values[sample_name], values[time_name] = sample, timestep[None]
-            for name in inner:
-                self._run_program(name, values, initialize and step == 0)
-            program = self._programs[velocity]
-            run = program.run_device if self._device_resident else _call(program, initialize and step == 0)
-            result = run(*(values[n] for n in self._inputs[velocity]))
-            if self._device_resident:
-                (result,) = result
-            sample = sample + self._dt * result
-        values[sample_name] = sample
-
-    def _run_program(self, name: str, values: dict, initialize: bool) -> None:
-        program = self._programs[name]
-        run = getattr(program, "run_device", None) or _call(program, initialize)
-        outputs = run(*(values[n] for n in self._inputs[name]))
-        outputs = outputs if isinstance(outputs, tuple) else (outputs,)
+    def _run(self, name: str, values: dict[str, Any]) -> None:
+        outputs = self._programs[name].run_device(*(values[n] for n in self._inputs[name]))
         values.update(zip(self._outputs[name], outputs, strict=True))
 
 
-def _call(program: Program, initialize: bool) -> Program:
-    """The program's `initialize`, which runs the startup check, or the program itself."""
-    return getattr(program, "initialize", program) if initialize else program
-
-
 class ExportInferenceEngine(InferenceEngine):
-    """Inline inference with an exported program: one program call per action chunk.
+    """Inline inference with an exported policy: one run of its programs per action chunk.
 
-    Plays the chunk one action per call, as `SyncInferenceEngine` does with the PyTorch policy's
-    action queue. Before running, it replays the folder's test case and refuses to start if the
-    program's actions differ from what `lerobot-rollout` played with PyTorch at export time.
+    Plays the chunk one action per call, as `SyncInferenceEngine` does with the PyTorch policy's action
+    queue. Before running, it replays the folder's test case and refuses to start if the actions differ by
+    more than the folder's tolerance from the test case's expected actions, which the export computed in
+    PyTorch.
     """
 
     def __init__(
@@ -189,69 +133,30 @@ class ExportInferenceEngine(InferenceEngine):
     ) -> None:
         super().__init__(task=task)
         info = json.loads((folder / EXPORT_INFO).read_text())
-        self._input_names: list[str] = info["inputs"]
-        self._robot_type = robot_type
-        self._rename = rename_map or {}
-        self._noise_shape: tuple[int, ...] | None = (
-            tuple(info["noise_shape"]) if "noise_shape" in info else None
-        )
-        self._text_steps = None
-        if "text_steps" in info:
-            from lerobot.processor import PolicyProcessorPipeline
-
-            self._text_steps = PolicyProcessorPipeline.from_pretrained(
-                folder, config_filename=info["text_steps"]
-            )
-        self._program = load_program(folder, info)
-        self._raw_frame: bool | None = info.get("raw_frame")
+        self._frame_names = [name for name in info["inputs"] if name != NOISE]
+        self._noise_shape = tuple(info["noise_shape"]) if "noise_shape" in info else None
         self._image_resize = info.get("image_resize")
+        self._rename = rename_map or {}
+        self._chain = ProgramChain(load_programs(folder, info), info)
         self._actions: deque[np.ndarray] = deque()
         self._fixed_task: str | None = info["task"] if info.get("task_fixed") else None
         self._check_task(task)
-        self._check(folder / info["test_case"], info.get("task", task), info["tolerance"])
+        self._check(folder / info["test_case"], info["tolerance"])
         logger.info("Exported policy loaded from %s (%s)", folder, info["backend"])
 
-    def _run_chunk(
-        self,
-        frame: dict[str, np.ndarray],
-        task: str,
-        noise: np.ndarray | None = None,
-        initialize: bool = False,
-    ) -> np.ndarray:
+    def _run_chunk(self, frame: dict[str, np.ndarray], noise: np.ndarray | None = None) -> np.ndarray:
         if self._image_resize is not None:
             from .images import resize_images
 
             frame = resize_images(frame, self._image_resize)
-        observation = {}
-        names = [name for name in self._input_names if name != NOISE] if self._raw_frame else frame
-        for name in names:
-            value = frame[name]
-            if not self._raw_frame:
-                if "image" in name:
-                    if value.dtype == np.uint8:
-                        value = value.astype(np.float32) / 255
-                    value = value.transpose(2, 0, 1)
-                value = value[None]
-            observation[name] = np.ascontiguousarray(value)
-        if self._text_steps is not None:
-            import torch
-
-            tensors = {name: torch.from_numpy(value) for name, value in observation.items()}
-            tensors.update(task=task or "", robot_type=self._robot_type or "")
-            with torch.inference_mode():
-                observation = self._text_steps(tensors)
-            observation = {
-                name: value.cpu().numpy() if isinstance(value, torch.Tensor) else value
-                for name, value in observation.items()
-            }
+        inputs = [np.ascontiguousarray(frame[name]) for name in self._frame_names]
         if self._noise_shape is not None:
-            observation[NOISE] = (
+            inputs.append(
                 noise
                 if noise is not None
                 else np.random.standard_normal(self._noise_shape).astype(np.float32)
             )
-        actions = _call(self._program, initialize)(*(observation[name] for name in self._input_names))
-        return (actions if self._raw_frame else actions[0]).copy()
+        return self._chain(*inputs)
 
     def _task_error(self, task: str) -> str | None:
         if self._fixed_task is not None and task != self._fixed_task:
@@ -265,17 +170,10 @@ class ExportInferenceEngine(InferenceEngine):
         if error := self._task_error(task):
             raise ValueError(error)
 
-    def _check(self, path: Path, task: str, tolerance: float) -> None:
+    def _check(self, path: Path, tolerance: float) -> None:
         case = load_file(path)
         expected = case.pop("expected_actions")
-        input_shape = getattr(self._program, "input_shape", None)
-        if self._raw_frame is None:
-            self._raw_frame = (
-                self._text_steps is None
-                and input_shape is not None
-                and input_shape == case[self._input_names[0]].shape
-            )
-        actual = self._run_chunk(case, task, case.pop(NOISE, None), initialize=True)
+        actual = self._run_chunk(case, case.pop(NOISE, None))
         error = float(np.abs(actual - expected).max()) if actual.shape == expected.shape else np.inf
         logger.info("Exported policy test case: largest difference %.2e (tolerance %g)", error, tolerance)
         if not error <= tolerance:
@@ -316,7 +214,7 @@ class ExportInferenceEngine(InferenceEngine):
         if not self._actions:
             start = time.perf_counter()
             frame = {self._rename.get(name, name): value for name, value in obs_frame.items()}
-            self._actions.extend(self._run_chunk(frame, task))
+            self._actions.extend(self._run_chunk(frame))
             end = time.perf_counter()
             self.inference_times.append((end, end - start))
         self._set_dispatched_task(task)

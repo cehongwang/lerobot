@@ -24,7 +24,7 @@ import torch
 def test_patch_packing_preserves_order_with_at_most_eight_dimensions(monkeypatch, cameras, t, p, m, gh, gw):
     pytest.importorskip("transformers")
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "examples" / "export"))
-    from groot_recipe import GrootObservation
+    from groot import GrootObservation
 
     class Observation(GrootObservation):
         def __init__(self):
@@ -63,7 +63,7 @@ def test_patch_packing_preserves_order_with_at_most_eight_dimensions(monkeypatch
 def test_patch_packing_normalizes_images_and_state(monkeypatch, mode):
     pytest.importorskip("transformers")
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "examples" / "export"))
-    from groot_recipe import GrootObservation
+    from groot import GrootObservation
 
     mean, std, factor = torch.tensor([0.4, 0.5, 0.6]), torch.tensor([0.2, 0.25, 0.3]), 1 / 255
     low, span = torch.tensor([-1.0, 0.0, 2.0]), torch.tensor([2.0, 4.0, 0.0])
@@ -104,7 +104,7 @@ def observation_for(monkeypatch, frame_cameras, video_keys, rename_map=None):
 
     pytest.importorskip("transformers")
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "examples" / "export"))
-    from groot_recipe import GrootObservation
+    from groot import GrootObservation
 
     from lerobot.policies.groot.processor_groot import GrootN17PackInputsStep, GrootN17VLMEncodeStep
     from lerobot.processor import PolicyProcessorPipeline, RenameObservationsProcessorStep

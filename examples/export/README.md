@@ -1,6 +1,6 @@
 # Compiled LeRobot policies on an NVIDIA Jetson
 
-Train a policy as usual. Then export it into a compiled folder, and run that folder with `lerobot-rollout`, the same command you use for a PyTorch checkpoint. A compiled policy runs several times faster and uses a fraction of the memory, so the larger policies also fit on a small board.
+Train a policy as usual, export it into a compiled folder, and run that folder with `lerobot-rollout`, the same command you use for a PyTorch checkpoint. A compiled policy runs several times faster and uses a fraction of the memory, so the larger policies also fit on a small board.
 
 Supported policies: ACT, SmolVLA, pi0.5 and GR00T N1.7.
 
@@ -8,67 +8,58 @@ Supported policies: ACT, SmolVLA, pi0.5 and GR00T N1.7.
 
 - [SO-101](../../docs/source/so101.mdx) arm with a scene camera and a wrist camera
 - [Jetson AGX Thor](https://www.nvidia.com/en-us/autonomous-machines/embedded-systems/jetson-thor/), to train, export and run
-- [Jetson Orin Nano Super](https://www.nvidia.com/en-us/autonomous-machines/embedded-systems/jetson-orin/nano-super-developer-kit/), to export and run the policies that fit in its 8 GB
+- [Jetson Orin Nano Super](https://www.nvidia.com/en-us/autonomous-machines/embedded-systems/jetson-orin/nano-super-developer-kit/), to export and run in 8 GB
 
 ## Install
 
-Run these commands on each Jetson (JetPack 7.2.1), with [uv](https://docs.astral.sh/uv/):
+On each Jetson (JetPack 7.2.1), with [uv](https://docs.astral.sh/uv/):
 
 ```bash
 git clone --branch export https://github.com/shoumikhin/lerobot.git
 cd lerobot
 uv venv --python 3.12
 source .venv/bin/activate
-uv pip install \
-    -e ".[smolvla,pi,groot,feetech,export]" \
-    "torch-tensorrt[executorch]" \
+uv pip install -e ".[smolvla,pi,groot,feetech,export]" "torch-tensorrt[executorch]" \
     --index-url https://download.pytorch.org/whl/nightly/cu132 \
     --extra-index-url https://pypi.org/simple \
     --extra-index-url https://pypi.nvidia.com \
-    --index-strategy unsafe-best-match \
-    --prerelease allow
+    --index-strategy unsafe-best-match --prerelease allow
 ```
 
-## Export a policy
+## Export
 
-Export on the same kind of board that will run the policy: a compiled folder only runs on the GPU model that built it. (For ACT and SmolVLA you can also export once and build on each board, see [build_engine.py](build_engine.py).)
+Export on the kind of board that will run the policy: a compiled folder only runs on the GPU model that built it.
 
 ```bash
-python examples/export/act_executorch_tensorrt.py \
+python examples/export/executorch_tensorrt.py \
     --policy.path=outputs/train/act_so101/checkpoints/last/pretrained_model \
-    --output_dir=outputs/export/act_executorch_tensorrt
+    --output_dir=outputs/export/act
 ```
 
-Each policy has one script per route (the way it is compiled). All routes use [TensorRT](https://developer.nvidia.com/tensorrt), NVIDIA's compiler for its GPUs. If you are not sure, start with ExecuTorch-TensorRT: it is fast and small, and it runs without PyTorch.
+Each script compiles any supported policy one way. All use [TensorRT](https://developer.nvidia.com/tensorrt), NVIDIA's compiler for its GPUs. If you are not sure, start with ExecuTorch-TensorRT: it is fast and small, and it runs without PyTorch.
 
-| route               | script name                       | writes                        | needs PyTorch to run |
-| ------------------- | --------------------------------- | ----------------------------- | -------------------- |
-| ExecuTorch-TensorRT | `<policy>_executorch_tensorrt.py` | an ExecuTorch `.pte` program  | no                   |
-| ONNX-TensorRT       | `<policy>_onnx_tensorrt.py`       | a TensorRT `.engine`          | no                   |
-| Torch-TensorRT      | `<policy>_torch_tensorrt.py`      | an AOTInductor `.pt2` package | yes                  |
+| script                   | writes                      | needs PyTorch to run |
+| ------------------------ | --------------------------- | -------------------- |
+| `executorch_tensorrt.py` | ExecuTorch `.pte` programs  | no                   |
+| `onnx_tensorrt.py`       | TensorRT `.engine` files    | no                   |
+| `torch_tensorrt.py`      | AOTInductor `.pt2` packages | yes                  |
 
-`<policy>` is `act`, `smolvla`, `pi05` or `groot`. Some policies need one or two more arguments:
+Some policies need more arguments:
 
-- **SmolVLA and GR00T** read the camera names and the task from the dataset they were trained on: add `--dataset.repo_id="<user>/so101_dataset"`, and `--dataset.root=<folder>` if the dataset is on your disk. They export for the dataset's first task; add `--task="<one of its tasks>"` to choose another.
-- **pi0.5** needs the task it was trained on, and the camera slots your robot fills (it fills the rest by itself):
+- **SmolVLA and GR00T** take their camera names and task from the dataset they were trained on: add `--dataset.repo_id=<user>/so101_dataset`, and `--task="<one of its tasks>"` to pick a task other than its first.
+- **pi0.5** takes the task it was trained on, and the camera slots your robot fills: add `--task="pick up the block and place it in the cup" --cameras observation.images.base_0_rgb observation.images.left_wrist_0_rgb`.
 
-```bash
-python examples/export/pi05_executorch_tensorrt.py \
-    --policy.path=outputs/train/pi05_so101/checkpoints/last/pretrained_model \
-    --task="pick up the block and place it in the cup" \
-    --cameras observation.images.base_0_rgb observation.images.left_wrist_0_rgb \
-    --output_dir=outputs/export/pi05_executorch_tensorrt
-```
+pi0.5 and GR00T are too large to compile in one piece on a small board, so the scripts build them as a chain of smaller programs, one at a time.
 
-pi0.5 and GR00T are too large to compile in one piece on a small board, so their scripts write a chain of smaller programs. `lerobot-rollout` runs the chain for you.
+To run an ONNX-TensorRT export on another board, copy the folder there and rebuild its engines with `python examples/export/build_engine.py <folder>`.
 
-## Run it
+## Run
 
 Use the same calibrated robot and camera settings as when you recorded the training data:
 
 ```bash
 lerobot-rollout \
-    --policy.path=outputs/export/act_executorch_tensorrt \
+    --policy.path=outputs/export/act \
     --robot.type=so101_follower \
     --robot.port=/dev/ttyACM0 \
     --robot.id=my_follower \
@@ -76,32 +67,22 @@ lerobot-rollout \
     --duration=30
 ```
 
-SmolVLA, pi0.5 and GR00T run only the task they were exported for, so pass that same `--task`. If your camera names differ from the policy's, add `--rename_map`, for example for the pi0.5 export above:
+SmolVLA, pi0.5 and GR00T run only the task they were exported for, so pass the same `--task`. If your camera names differ from the policy's, add `--rename_map`, for example `--rename_map='{"observation.images.scene": "observation.images.base_0_rgb"}'`.
 
-```bash
---task="pick up the block and place it in the cup" \
---rename_map='{"observation.images.scene": "observation.images.base_0_rgb", "observation.images.wrist": "observation.images.left_wrist_0_rgb"}'
-```
-
-Before the robot moves, the rollout checks the compiled policy against the actions PyTorch gave at export time, and stops if they differ.
+Before the robot moves, the rollout checks that the compiled policy reproduces the actions PyTorch computed at export time, and stops if it does not.
 
 ### Without a robot
 
-[replay_robot](replay_robot) plays back the cameras and joint positions of recorded episodes and accepts every action, so you can try a policy at your desk:
+[replay_robot](replay_robot) plays back recorded episodes and accepts every action, so you can try a policy at your desk:
 
 ```bash
 uv pip install -e examples/export/replay_robot
 python examples/export/replay_robot/write_frames.py \
-    --dataset.repo_id="<user>/so101_dataset" \
-    --episodes 0 1 2 3 \
-    --output_dir=outputs/replay_frames
+    --dataset.repo_id=<user>/so101_dataset --episodes 0 1 2 3 --output_dir=outputs/replay_frames
 lerobot-rollout \
-    --policy.path=outputs/export/act_executorch_tensorrt \
-    --robot.type=replay \
-    --robot.frames_dir=outputs/replay_frames \
-    --duration=60 \
-    --return_to_initial_position=false \
-    --play_sounds=false
+    --policy.path=outputs/export/act \
+    --robot.type=replay --robot.frames_dir=outputs/replay_frames \
+    --duration=60 --return_to_initial_position=false --play_sounds=false
 ```
 
 ## Results
@@ -181,4 +162,4 @@ The largest error usually comes from one or two samples where the policy is clos
 ## Good to know
 
 - **Orin Nano memory.** Compiling SmolVLA, pi0.5 or GR00T on the 8 GB board may need swap space.
-- **These checks show that the compiled policy matches PyTorch.** They do not show that the robot is safe or that it does the task.
+- **The checks show that the compiled policy matches PyTorch.** They do not show that the robot is safe or that it does the task.

@@ -231,24 +231,24 @@ def test_chained_engines_share_scratch_and_keep_the_cache_on_device(tmp_path, mo
         def use_scratch(self, buffer):
             scratch.append(buffer)
 
-        def run_device(self, state):
-            return (cache,)
-
-        def __call__(self, *inputs):
-            if self.name == "actions":
-                return inputs[0]
+        def run_device(self, *inputs):
+            if self.name == "prefix":
+                return (cache,)
             saved, sample, timestep = inputs
             assert saved is cache
             assert timestep.shape == (1,) and timestep.dtype == np.float32
             times.append(timestep.item())
-            return sample * timestep
+            return (sample * timestep,)
+
+        def __call__(self, *inputs):
+            return inputs[0]
 
     monkeypatch.setattr(backend, "TensorRTEngine", Engine)
     monkeypatch.setattr(backend, "CudaStream", lambda: "stream")
     monkeypatch.setattr(backend, "CudaBuffer", lambda *a: object())
     programs = {
         "prefix": {"file": "prefix.engine", "inputs": ["state"], "outputs": ["past_key_0"]},
-        "step": {"file": "step.engine", "inputs": ["past_key_0", "x_t", "timestep"], "outputs": ["v_t"]},
+        "step": {"file": "step.engine", "inputs": ["past_key_0", "x_t", "timestep"], "outputs": ["x_next"]},
         "actions": {"file": "actions.engine", "inputs": ["x_t"], "outputs": ["action"]},
     }
     engines = backend.load_engines(tmp_path, programs)
@@ -257,8 +257,13 @@ def test_chained_engines_share_scratch_and_keep_the_cache_on_device(tmp_path, mo
         for engine in engines.values()
     )
     assert len(scratch) == 3 and all(buffer is scratch[0] for buffer in scratch)
-    chain = ProgramChain(engines, {"inputs": ["state", "noise"], "programs": programs, "num_steps": 4})
-    result = chain(np.ones(3), np.ones(noise_shape, dtype=np.float32))
+    info = {
+        "inputs": ["state", "noise"],
+        "programs": programs,
+        "steps": ["step"],
+        "timesteps": [1.0, 0.75, 0.5],
+    }
+    result = ProgramChain(engines, info)(np.ones(3), np.ones(noise_shape, dtype=np.float32))
     assert result.shape == noise_shape
-    assert times == [1.0, 0.75, 0.5, 0.25]
-    np.testing.assert_allclose(result, (1 - 0.25) * (1 - 0.1875) * (1 - 0.125) * (1 - 0.0625))
+    assert times == [1.0, 0.75, 0.5]
+    np.testing.assert_allclose(result, 1.0 * 0.75 * 0.5)

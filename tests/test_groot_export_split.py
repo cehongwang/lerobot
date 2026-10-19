@@ -13,85 +13,16 @@
 # limitations under the License.
 
 import importlib
-import json
-import os
 import runpy
 import sys
 from argparse import Namespace
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
 import torch
-
-
-def test_checkpoint_split_matches_chunk(monkeypatch, tmp_path):
-    checkpoint = os.environ.get("GROOT_SPLIT_CHECKPOINT")
-    dataset = os.environ.get("GROOT_SPLIT_DATASET")
-    if not checkpoint or not dataset:
-        pytest.skip("Set GROOT_SPLIT_CHECKPOINT and GROOT_SPLIT_DATASET for the checkpoint check.")
-    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "examples" / "export"))
-    from groot_recipe import GrootChunk, GrootExport, free_memory, part_names
-
-    from lerobot.inference.export.engine import ProgramChain
-    from lerobot.policies.groot.modeling_groot import GrootPolicy
-
-    class Program:
-        def __init__(self, module):
-            self.module = module
-
-        def run_device(self, *inputs):
-            with torch.no_grad():
-                return self.module(*(torch.as_tensor(x, device="cuda") for x in inputs))
-
-        def __call__(self, *inputs):
-            return self.run_device(*inputs).float().cpu().numpy()
-
-    torch.manual_seed(14)
-    np.random.seed(14)
-    args = Namespace(
-        task=None,
-        output_dir=tmp_path,
-        policy_path=checkpoint,
-        backend="eager",
-        tolerance=0.0,
-        dataset=dataset,
-        dataset_root=os.environ.get("GROOT_SPLIT_DATASET_ROOT"),
-    )
-    export = GrootExport(args, split=True)
-    programs, metadata = {}, {}
-    for name, module, inputs, input_names, output_names in export.parts():
-        programs[name] = Program(module)
-        metadata[name] = {"file": f"{name}.pte", "inputs": input_names, "outputs": output_names}
-        assert len(inputs) == len(input_names)
-        with torch.no_grad():
-            outputs = module(*inputs)
-        outputs = outputs if isinstance(outputs, tuple) else (outputs,)
-        assert len(outputs) == len(output_names)
-        print(f"CHECKED {name}", flush=True)
-        del module, outputs
-        free_memory()
-    assert list(programs) == part_names(checkpoint)
-    export.write(metadata)
-    info = json.loads((tmp_path / "export.json").read_text())
-    chain = ProgramChain(programs, info)
-    chained = torch.from_numpy(chain(*(x.cpu().numpy() for x in export.inputs)))
-    actual = torch.from_numpy(export.expected_actions)
-    torch.testing.assert_close(chained, actual, rtol=0, atol=0)
-    del chain, programs
-    free_memory()
-    policy = GrootPolicy.from_pretrained(checkpoint).cuda().eval()
-    reference = GrootChunk(policy, export.batch, export.postprocessor, export.frame_processor).eval()
-    with torch.no_grad():
-        expected = reference(*export.inputs).float().cpu()
-    difference = (actual - expected).abs().max().item()
-    print(f"SPLIT_VS_CHUNK max_abs={difference:.9g} shape={tuple(actual.shape)}", flush=True)
-    assert torch.isfinite(actual).all()
-    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
-    torch.testing.assert_close(chained, expected, rtol=0, atol=0)
 
 
 @pytest.fixture
@@ -99,7 +30,7 @@ def recipe(monkeypatch):
     pytest.importorskip("transformers")
     pytest.importorskip("diffusers")
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "examples" / "export"))
-    return importlib.import_module("groot_recipe")
+    return importlib.import_module("groot")
 
 
 def action_pipeline(*steps):
@@ -355,7 +286,7 @@ def test_step_slices_and_program_chain_match_action_head(recipe, alternate, inte
         )["action_pred"][0]
     split_head = deepcopy(head)
     parts = [
-        recipe.GrootStep(split_head, fixed, start, stop, False).eval()
+        recipe.GrootStep(split_head, fixed, start, stop, False, 1 / 3).eval()
         for start, stop in ((0, 2), (2, 3), (3, 5))
     ]
     for part in parts:
@@ -368,33 +299,34 @@ def test_step_slices_and_program_chain_match_action_head(recipe, alternate, inte
         def __init__(self, module, name):
             self.module, self.name = module, name
 
-        def __call__(self, *arrays):
+        def run_device(self, *values):
             calls.append(self.name)
             with torch.no_grad():
-                result = self.module(*(torch.from_numpy(x) for x in arrays))
-            if isinstance(result, tuple):
-                return tuple(x.numpy() for x in result)
-            return result.numpy()
+                result = self.module(*(torch.as_tensor(x) for x in values))
+            return result if isinstance(result, tuple) else (result,)
+
+        def __call__(self, *values):
+            outputs = [x.numpy() for x in self.run_device(*values)]
+            return outputs[0] if len(outputs) == 1 else tuple(outputs)
 
     programs = {f"step_{i}": Program(part, f"step_{i}") for i, part in enumerate(parts)}
     programs["actions"] = Program(recipe.GrootActions(2, 3, action_pipeline()), "actions")
     names = {
-        "step_0": (["vl", "state", "x_t", "time"], ["hidden", "temb"]),
+        "step_0": (["vl", "state", "x_t", "timestep"], ["hidden", "temb"]),
         "step_1": (["vl", "hidden", "temb"], ["hidden"]),
-        "step_2": (["vl", "hidden", "temb"], ["velocity"]),
+        "step_2": (["vl", "hidden", "temb", "x_t"], ["x_next"]),
         "actions": (["x_t", "robot_state"], ["actions"]),
     }
     info = {
         "inputs": ["vl", "state", "robot_state", "noise"],
-        "num_steps": 3,
-        "dt": 1 / 3,
+        "steps": ["step_0", "step_1", "step_2"],
         "timesteps": [0, 333, 666],
         "programs": {
             name: {"inputs": inputs, "outputs": outputs} for name, (inputs, outputs) in names.items()
         },
     }
     chain = ProgramChain(programs, info)
-    actual = chain.initialize(features.numpy(), state.numpy(), np.zeros(6, np.float32), noise.numpy())
+    actual = chain(features.numpy(), state.numpy(), np.zeros(6, np.float32), noise.numpy())
     np.testing.assert_allclose(actual, expected[:2, :3].numpy(), rtol=0, atol=1e-6)
     assert calls == ["step_0", "step_1", "step_2"] * 3 + ["actions"]
     inputs = (features, state, noise, torch.tensor([333.0]))
@@ -405,7 +337,11 @@ def test_step_slices_and_program_chain_match_action_head(recipe, alternate, inte
             torch.testing.assert_close(saved, result, rtol=0, atol=0)
             if not part.last:
                 hidden, temb = result if part.start == 0 else (result, inputs[-1])
-                inputs = (features, hidden, temb)
+                inputs = (
+                    (features, hidden, temb)
+                    if not parts[parts.index(part) + 1].last
+                    else (features, hidden, temb, noise)
+                )
 
 
 def test_diffusion_parts_export_to_onnx_and_run_as_chain(recipe, monkeypatch, tmp_path):
@@ -420,32 +356,36 @@ def test_diffusion_parts_export_to_onnx_and_run_as_chain(recipe, monkeypatch, tm
         last = True
         deepstack_layers = []
 
-        def forward(self, features, state):
+        def forward(self, features, state, robot_state=None):
             return features, state
 
     torch.manual_seed(14)
     head = tiny_head(num_layers=25)
     features, state, noise = torch.randn(1, 5, 32), torch.randn(1, 1, 32), torch.randn(3, 4)
     text = SimpleNamespace(get_input_embeddings=lambda: torch.nn.Embedding(32, 32))
-    export = recipe.GrootExport.__new__(recipe.GrootExport)
+    export = recipe.Export.__new__(recipe.Export)
     export.__dict__.update(
         policy=SimpleNamespace(_groot_model=SimpleNamespace(backbone=SimpleNamespace(visual=None))),
         frame_processor=None,
+        image_resize=None,
         batch={"image_grid_thw": None, "input_ids": torch.zeros(1, 5, dtype=torch.long)},
         config=SimpleNamespace(use_bf16=False, output_features={ACTION: SimpleNamespace(shape=(3,))}),
         model_config=SimpleNamespace(
             select_layer=1, diffusion_model_cfg={"num_layers": 25}, add_pos_embed=False
         ),
         constants=constants(),
-        inputs=(features, state, noise),
-        input_names=["features", "state", "noise"],
         noise=noise,
         timesteps=[0, 333, 666],
         num_steps=3,
         horizon=2,
         postprocessor=action_pipeline(),
-        frame={"observation.state": np.zeros(3, np.float32)},
+        frame={
+            "features": features.numpy(),
+            "state": state.numpy(),
+            "observation.state": np.zeros(3, np.float32),
+        },
     )
+    monkeypatch.setattr(recipe, "resize_images", lambda frame, geometry: frame)
     # Keep the prefix tiny while exercising the real recipe's diffusion modules and names.
     monkeypatch.setattr(recipe, "GrootVision", lambda *args: Prefix())
     monkeypatch.setattr(recipe, "GrootLanguageModel", lambda *args: Prefix())
@@ -460,122 +400,59 @@ def test_diffusion_parts_export_to_onnx_and_run_as_chain(recipe, monkeypatch, tm
     )
     sessions = {}
 
-    def check_engine(onnx_path, engine_path, **options):
+    def check_engine(onnx_path, engine_path, workspace_bytes, optimization_level):
         onnx.checker.check_model(onnx.load(onnx_path), full_check=True)
         sessions[engine_path.stem] = onnxruntime.InferenceSession(
             str(onnx_path), providers=["CPUExecutionProvider"]
         )
 
     monkeypatch.setitem(sys.modules, "build_engine", SimpleNamespace(build_engine=check_engine))
-    script = Path(recipe.__file__).with_name("groot_onnx_tensorrt.py")
-    compile_part = runpy.run_path(str(script))["compile_part"]
+    compile_part = runpy.run_path(str(Path(recipe.__file__).with_name("onnx_tensorrt.py")))["compile_part"]
     programs, metadata = {}, {}
 
     class Program:
         def __init__(self, session, input_names):
             self.session, self.input_names = session, input_names
 
-        def __call__(self, *arrays):
-            outputs = self.session.run(None, dict(zip(self.input_names, arrays, strict=True)))
-            return outputs[0] if len(outputs) == 1 else tuple(outputs)
+        def run_device(self, *arrays):
+            return tuple(
+                self.session.run(None, dict(zip(self.input_names, map(np.asarray, arrays), strict=True)))
+            )
 
-    for name, module, inputs, input_names, output_names in export.parts():
-        if not (name.startswith("step_") or name == "actions"):
+        def __call__(self, *arrays):
+            outputs = self.run_device(*arrays)
+            return outputs[0] if len(outputs) == 1 else outputs
+
+    for part in export.parts():
+        if not (part.name.startswith("step_") or part.name == "actions"):
             continue
-        compile_part(module, inputs, input_names, output_names, tmp_path / f"{name}.engine")
-        session = sessions[name]
-        assert [value.name for value in session.get_inputs()] == input_names
-        assert [value.name for value in session.get_outputs()] == output_names
-        programs[name] = Program(session, input_names)
-        metadata[name] = {"inputs": input_names, "outputs": output_names}
+        compile_part(part, tmp_path / f"{part.name}.engine")
+        session = sessions[part.name]
+        assert [value.name for value in session.get_inputs()] == part.input_names
+        assert [value.name for value in session.get_outputs()] == part.output_names
+        programs[part.name] = Program(session, part.input_names)
+        metadata[part.name] = {"inputs": part.input_names, "outputs": part.output_names}
         with torch.no_grad():
-            expected = module(*inputs)
+            expected = part.module(*part.inputs)
         expected = expected if isinstance(expected, tuple) else (expected,)
-        actual = session.run(None, dict(zip(input_names, [x.numpy() for x in inputs], strict=True)))
+        actual = session.run(None, dict(zip(part.input_names, [x.numpy() for x in part.inputs], strict=True)))
         for got, want in zip(actual, expected, strict=True):
             np.testing.assert_allclose(got, want.numpy(), rtol=1e-5, atol=1e-5)
     assert list(programs) == ["step_0", "step_1", "step_2", "step_3", "actions"]
     info = {
         "inputs": ["vl_embeds", "state_features", "observation.state", "noise"],
         "programs": metadata,
-        "num_steps": export.num_steps,
+        "steps": ["step_0", "step_1", "step_2", "step_3"],
         "timesteps": export.timesteps,
-        "dt": 1 / export.num_steps,
     }
     robot_state = export.frame["observation.state"]
     actual = ProgramChain(programs, info)(features.numpy(), state.numpy(), robot_state, noise.numpy())
     np.testing.assert_allclose(actual, export.expected_actions, rtol=1e-5, atol=1e-5)
 
 
-def test_export_parts_uses_a_fresh_process_for_each_part(recipe, monkeypatch, tmp_path):
-    names = ["vision", "language_model_0", "step_0", "step_1", "actions"]
-    calls = []
-    monkeypatch.setattr(recipe, "part_names", lambda path: names)
-    monkeypatch.setattr(recipe.subprocess, "run", lambda command, check: calls.append((command, check)))
-    monkeypatch.setattr(sys, "argv", ["export", "--policy.path=checkpoint"])
-    output = tmp_path / "export"
-    args = Namespace(part=None, policy_path="checkpoint", output_dir=output, job_name="groot")
-    recipe.export_parts(args, "export", "{name}.pte", None)
-    assert output.is_dir()
-    assert calls == [
-        (
-            [
-                sys.executable,
-                "export",
-                "--policy.path=checkpoint",
-                f"--output_dir={output}",
-                f"--part={name}",
-            ],
-            True,
-        )
-        for name in names
-    ]
-
-
-@pytest.mark.parametrize("device_resident", [False, True])
-def test_export_parts_saves_the_device_contract(recipe, monkeypatch, tmp_path, device_resident):
-    export = recipe.GrootExport.__new__(recipe.GrootExport)
-    export.__dict__.update(
-        output_dir=tmp_path,
-        backend="executorch_tensorrt",
-        frame={"observation.state": np.zeros(2, np.float32)},
-        noise=torch.zeros(3, 4),
-        expected_actions=np.zeros((3, 2), np.float32),
-        config=SimpleNamespace(save_pretrained=lambda path: None),
-        input_features={},
-        input_names=["observation.state", "noise"],
-        image_resize=None,
-        task="pick",
-        tolerance=5.0,
-        num_steps=2,
-        timesteps=[0, 500],
-        start=recipe.time.perf_counter(),
-    )
-    monkeypatch.setattr(recipe, "part_names", lambda path: ["actions"])
-    monkeypatch.setattr(recipe, "GrootExport", lambda args, split: export)
-    monkeypatch.setattr(
-        export,
-        "parts",
-        lambda: iter([("actions", torch.nn.Identity(), (export.noise,), ["x_t"], ["action"])]),
-    )
-    compiled = []
-    args = Namespace(part="actions", policy_path="checkpoint")
-    recipe.export_parts(
-        args, "export", "{name}.pte", lambda *args: compiled.append(args[-1]), device_resident=device_resident
-    )
-    info = json.loads((tmp_path / "export.json").read_text())
-    assert compiled == [tmp_path / "actions.pte"]
-    assert info["device_resident"] is device_resident
-    assert info["programs"]["actions"]["file"] == "actions.pte"
-    assert info["dt"] == 0.5 and info["timesteps"] == [0, 500]
-    # The task is baked into the programs and the frame goes in raw, so the engine must know both.
-    assert info["task"] == "pick" and info["task_fixed"] is True
-    assert info["raw_frame"] is True
-
-
 def test_part_loader_preserves_precision_without_changing_policy_config(recipe, monkeypatch):
     calls = []
-    export = recipe.GrootExport.__new__(recipe.GrootExport)
+    export = recipe.Export.__new__(recipe.Export)
     export.config = SimpleNamespace(use_bf16=True, dtype=torch.float32)
     export.model_file = "checkpoint"
     monkeypatch.setattr(
@@ -663,13 +540,13 @@ def test_numpy_action_decoding_exports_to_onnx_and_follows_new_actions(recipe, t
     [((12, 16, 3), ["height", "width", "channels"]), ((3, 12, 16), ["channels", "height", "width"])],
 )
 def test_robot_frame_cameras_are_hwc_whatever_the_dataset_layout(recipe, shape, names):
-    smolvla = importlib.import_module("smolvla_recipe")
+    smolvla = importlib.import_module("export")
     features = {
         "observation.images.front": {"dtype": "video", "shape": shape, "names": names},
         "observation.state": {"dtype": "float32", "shape": (6,), "names": None},
         "action": {"dtype": "float32", "shape": (6,), "names": None},
     }
-    frame = smolvla.random_robot_frame(features)
+    frame = smolvla.frame_from_dataset(features)
     assert frame["observation.images.front"].shape == (12, 16, 3)
     assert frame["observation.images.front"].dtype == np.uint8
     assert frame["observation.state"].shape == (6,) and "action" not in frame
@@ -678,7 +555,7 @@ def test_robot_frame_cameras_are_hwc_whatever_the_dataset_layout(recipe, shape, 
 def test_task_must_be_one_of_the_dataset_tasks(recipe):
     import pandas as pd
 
-    smolvla = importlib.import_module("smolvla_recipe")
+    smolvla = importlib.import_module("export")
     metadata = SimpleNamespace(tasks=pd.DataFrame(index=["pick the cup", "open the drawer"]))
     assert smolvla.dataset_task(metadata, None) == "pick the cup"
     assert smolvla.dataset_task(metadata, "open the drawer") == "open the drawer"
@@ -697,132 +574,13 @@ def test_relative_actions_follow_the_robot_state_after_export(recipe, policy):
     if policy == "groot":
         part = recipe.GrootActions(2, 3, postprocessor)
     else:
-        pi05 = importlib.import_module("pi05_recipe")
+        pi05 = importlib.import_module("pi05")
         config = SimpleNamespace(n_action_steps=2, output_features={"action": SimpleNamespace(shape=(3,))})
         part = pi05.PI05Actions(SimpleNamespace(config=config), postprocessor)
     offsets = torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]])
     program = torch.export.export(part, (offsets, torch.full((3,), 50.0))).module()
     moved = torch.tensor([-5.0, 0.0, 5.0])
     torch.testing.assert_close(program(offsets, moved), offsets[:2] + moved)
-
-
-@pytest.mark.parametrize("backend", ["onnx_tensorrt", "torch_tensorrt"])
-def test_split_script_launches_every_recipe_part(recipe, monkeypatch, tmp_path, backend):
-    monkeypatch.setattr(
-        recipe.PreTrainedConfig, "from_pretrained", lambda path: SimpleNamespace(base_model_path="base")
-    )
-    monkeypatch.setattr(
-        recipe.GR00TN17Config,
-        "from_pretrained",
-        lambda path: SimpleNamespace(select_layer=16, diffusion_model_cfg={"num_layers": 25}),
-    )
-    monkeypatch.setitem(sys.modules, "build_engine", SimpleNamespace(build_engine=MagicMock()))
-    monkeypatch.setitem(sys.modules, "torch_tensorrt", MagicMock())
-    load = MagicMock(side_effect=AssertionError("The parent must not load the whole policy"))
-    monkeypatch.setattr(recipe, "GrootExport", load)
-    calls = MagicMock()
-    monkeypatch.setattr(recipe.subprocess, "run", calls)
-    script = Path(recipe.__file__).with_name(f"groot_{backend}.py")
-    output = tmp_path / "export"
-    argv = [str(script), "--policy.path=checkpoint", "--dataset.repo_id=dataset", f"--output_dir={output}"]
-    monkeypatch.setattr(sys, "argv", argv)
-    runpy.run_path(str(script), run_name="__main__")
-    names = [
-        "vision",
-        *(f"language_model_{i}" for i in range(3)),
-        *(f"step_{i}" for i in range(4)),
-        "actions",
-    ]
-    assert calls.call_count == len(names)
-    for call, name in zip(calls.call_args_list, names, strict=True):
-        assert call.args == ([sys.executable, *argv, f"--output_dir={output}", f"--part={name}"],)
-        assert call.kwargs == {"check": True}
-    load.assert_not_called()
-
-
-@pytest.mark.parametrize("backend,suffix", [("onnx_tensorrt", ".engine"), ("torch_tensorrt", ".pt2")])
-def test_split_script_compiles_named_parts_and_writes_chain(recipe, monkeypatch, tmp_path, backend, suffix):
-    class Part(torch.nn.Module):
-        def forward(self, x):
-            return x + 1, x * 2
-
-    names = ["vision", "language_model_0", "step_0", "actions"]
-    module = Part().eval()
-    inputs = (torch.arange(4, dtype=torch.float32),)
-    input_names, output_names = ["x_t"], ["hidden", "state"]
-    export = recipe.GrootExport.__new__(recipe.GrootExport)
-    export.__dict__.update(
-        output_dir=tmp_path,
-        backend=backend,
-        frame={"observation.state": np.zeros(2, np.float32)},
-        noise=inputs[0],
-        expected_actions=np.ones(4, np.float32),
-        config=SimpleNamespace(save_pretrained=lambda path: None),
-        input_features={},
-        input_names=["observation.state", "noise"],
-        image_resize=None,
-        task="pick",
-        tolerance=5.0,
-        num_steps=2,
-        timesteps=[0, 500],
-        start=recipe.time.perf_counter(),
-    )
-    monkeypatch.setattr(recipe, "part_names", lambda path: names)
-    load = MagicMock(return_value=export)
-    monkeypatch.setattr(recipe, "GrootExport", load)
-    monkeypatch.setattr(
-        export, "parts", lambda: iter((name, module, inputs, input_names, output_names) for name in names)
-    )
-    events = []
-    monkeypatch.setattr(module, "cpu", lambda: events.append("cpu"))
-    monkeypatch.setattr(recipe, "free_memory", lambda: events.append("free"))
-    onnx = MagicMock(side_effect=lambda *args, **kwargs: events.append("onnx"))
-    monkeypatch.setattr(torch.onnx, "export", onnx)
-    build = MagicMock(side_effect=lambda *args, **kwargs: events.append("build"))
-    monkeypatch.setitem(sys.modules, "build_engine", SimpleNamespace(build_engine=build))
-    trt = MagicMock()
-    monkeypatch.setitem(sys.modules, "torch_tensorrt", trt)
-    script = Path(recipe.__file__).with_name(f"groot_{backend}.py")
-    for name in names:
-        monkeypatch.setattr(
-            sys,
-            "argv",
-            [str(script), "--policy.path=checkpoint", "--dataset.repo_id=dataset", f"--part={name}"],
-        )
-        runpy.run_path(str(script), run_name="__main__")
-        assert load.call_args.kwargs == {"split": True}
-        if name != "actions":
-            assert not (tmp_path / "export.json").exists()
-    if backend == "onnx_tensorrt":
-        assert onnx.call_count == build.call_count == len(names)
-        for name, call in zip(names, onnx.call_args_list, strict=True):
-            assert call.args == (module, inputs, tmp_path / f"{name}.onnx")
-            assert call.kwargs == {"dynamo": True, "input_names": input_names, "output_names": output_names}
-        for name, call in zip(names, build.call_args_list, strict=True):
-            assert call.args == (tmp_path / f"{name}.onnx", tmp_path / f"{name}.engine")
-            assert call.kwargs == {
-                "workspace_gib": recipe.TENSORRT_OPTIONS["workspace_size"] / (1 << 30),
-                "optimization_level": recipe.TENSORRT_OPTIONS["optimization_level"],
-            }
-        assert events == [
-            event for i in range(len(names)) for event in [*(["free"] * i), "onnx", "cpu", "free", "build"]
-        ]
-    else:
-        assert trt.dynamo.compile.call_count == trt.save.call_count == len(names)
-        for call in trt.dynamo.compile.call_args_list:
-            assert call.kwargs == {"arg_inputs": inputs, **recipe.TENSORRT_OPTIONS}
-            torch.testing.assert_close(call.args[0].module()(*inputs), module(*inputs))
-        for name, call in zip(names, trt.save.call_args_list, strict=True):
-            assert call.args == (trt.dynamo.compile.return_value, str(tmp_path / f"{name}.pt2"))
-            assert call.kwargs == {"output_format": "aot_inductor", "arg_inputs": inputs}
-    info = json.loads((tmp_path / "export.json").read_text())
-    assert info["backend"] == backend
-    assert info["device_resident"] is (backend == "torch_tensorrt")
-    assert info["programs"] == {
-        name: {"file": f"{name}{suffix}", "inputs": input_names, "outputs": output_names} for name in names
-    }
-    assert "file" not in info
-    assert info["dt"] == 0.5 and info["timesteps"] == [0, 500]
 
 
 def test_part_names_cover_remainders_and_reject_unknown_parts(recipe, monkeypatch):
@@ -834,7 +592,7 @@ def test_part_names_cover_remainders_and_reject_unknown_parts(recipe, monkeypatc
         "from_pretrained",
         lambda path: SimpleNamespace(select_layer=16, diffusion_model_cfg={"num_layers": 25}),
     )
-    assert recipe.part_names("checkpoint") == [
+    assert recipe.part_names(Namespace(policy_path="checkpoint")) == [
         "vision",
         "language_model_0",
         "language_model_1",
@@ -845,5 +603,6 @@ def test_part_names_cover_remainders_and_reject_unknown_parts(recipe, monkeypatc
         "step_3",
         "actions",
     ]
-    with pytest.raises(ValueError, match="Unknown part"):
-        recipe.export_parts(Namespace(part="bad", policy_path="checkpoint"), "export", "{name}.pte", None)
+    export = importlib.import_module("export")
+    with pytest.raises(SystemExit, match="Unknown part"):
+        export.export("script", Namespace(part="bad", policy_path="checkpoint"), recipe, None, ".pte")

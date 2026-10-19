@@ -39,7 +39,7 @@ lerobot-info
 
 ## Compiled Policies on Jetson
 
-This fork adds compiled-policy export examples and runs their output through `lerobot-rollout`, with either a real robot or a replay plugin. See the [Jetson export guide](examples/export/README.md) for installation, compiler routes, commands, benchmarks and current limits. It compares PyTorch, `torch.compile`, Torch-TensorRT, ExecuTorch-TensorRT and ONNX-TensorRT on accuracy, latency and memory for ACT, SmolVLA, pi0.5 and GR00T on Jetson AGX Thor and Jetson Orin Nano. Some Orin Nano routes remain unrun. ExecuTorch-TensorRT and ONNX-TensorRT are the fastest measured routes for ACT and SmolVLA, and ExecuTorch-TensorRT uses less board memory than PyTorch in the measured comparisons.
+This fork exports trained ACT, SmolVLA, pi0.5 and GR00T policies into compiled folders that `lerobot-rollout` runs on an NVIDIA Jetson, several times faster than PyTorch and in a fraction of its memory. See the [export guide](examples/export/README.md).
 
 ## Robots & Control
 

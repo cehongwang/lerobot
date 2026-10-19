@@ -222,16 +222,27 @@ class TensorRTEngine:
         addresses = []
         try:
             for name, dtype, value in zip(self._input_names, self._input_dtypes, inputs, strict=True):
-                if isinstance(value, CudaBuffer):
+                if isinstance(value, CudaBuffer) and value not in self._outputs:
                     if value.dtype != dtype:
                         raise ValueError(f"{name} has dtype {value.dtype}; the engine expects {dtype}")
                     buffer = value
+                elif isinstance(value, CudaBuffer):
+                    # The engine's own output fed back in, as the next noisy actions of a denoising step:
+                    # copy it to the input buffer, so the engine never reads and writes one buffer at once.
+                    buffer = self._input_buffer(name, value.shape, dtype)
+                    check_cuda(
+                        cuda.cudaMemcpyAsync(
+                            buffer.ptr,
+                            value.ptr,
+                            buffer.nbytes,
+                            cuda.cudaMemcpyKind.cudaMemcpyDeviceToDevice,
+                            self._stream.handle,
+                        )
+                    )
                 else:
                     value = np.ascontiguousarray(value, dtype=dtype)
                     host_inputs.append(value)
-                    if name not in self._inputs:
-                        self._inputs[name] = CudaBuffer(value.shape, dtype)
-                    buffer = self._inputs[name]
+                    buffer = self._input_buffer(name, value.shape, dtype)
                     check_cuda(
                         cuda.cudaMemcpyAsync(
                             buffer.ptr,
@@ -252,6 +263,11 @@ class TensorRTEngine:
             # Input arrays must remain alive until their queued copies finish, including on errors.
             self._stream.synchronize()
         return tuple(self._outputs)
+
+    def _input_buffer(self, name: str, shape: tuple[int, ...], dtype) -> CudaBuffer:
+        if name not in self._inputs:
+            self._inputs[name] = CudaBuffer(shape, dtype)
+        return self._inputs[name]
 
     def _replay(self, addresses: tuple[int, ...]) -> None:
         """Launch the engine's CUDA graph, recorded on the first run the way NVIDIA documents for TensorRT."""

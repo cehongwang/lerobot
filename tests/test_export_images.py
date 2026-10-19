@@ -108,10 +108,8 @@ def test_runtime_resizes_both_startup_and_live_frames(tmp_path, monkeypatch):
     frame = {"observation.images.camera": image, "observation.state": state}
     info = {
         "backend": "torch_tensorrt",
-        "file": "model.pt2",
-        "raw_frame": True,
+        "programs": {"model": {"file": "model.pt2", "inputs": list(frame), "outputs": ["action"]}},
         "inputs": list(frame),
-        "output": "action",
         "test_case": "case.safetensors",
         "tolerance": 0,
         "image_resize": {
@@ -134,7 +132,7 @@ def test_runtime_resizes_both_startup_and_live_frames(tmp_path, monkeypatch):
         calls.append(camera.copy())
         return expected
 
-    monkeypatch.setattr(module, "load_program", lambda *args: program)
+    monkeypatch.setattr(module, "load_programs", lambda *args: {"model": program})
     engine = module.ExportInferenceEngine(tmp_path, "pick", "replay")
     np.testing.assert_array_equal(engine.get_action(frame), state)
     assert len(calls) == 2
