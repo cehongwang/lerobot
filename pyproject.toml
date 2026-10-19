@@ -280,7 +280,14 @@ lawam = [
 ]
 
 # Features
-export = ["cuda-bindings>=12.0,<14.0; sys_platform != 'darwin'", "ml-dtypes>=0.5,<1.0"]
+export = [
+    "cuda-bindings>=12.0,<14.0; sys_platform != 'darwin'",
+    "ml-dtypes>=0.5,<1.0",
+    # The ONNX-TensorRT route writes its programs with torch.onnx.export.
+    "onnx>=1.17.0,<2.0.0",
+    "onnxscript>=0.7.0,<0.8.0",
+    "onnxruntime>=1.16.0,<2.0.0",
+]
 # Remote inference transport and serialization.
 remote = ["eclipse-zenoh>=1.9.0,<1.11.0", "msgpack>=1.1.0,<2.0.0"]
 peft = ["lerobot[transformers-dep]", "lerobot[peft-dep]"]
@@ -363,6 +370,7 @@ all = [
     "lerobot[fastwam]",
     "lerobot[flux3]",
     "lerobot[groot]",
+    "lerobot[export]",
     "lerobot[xvla]",
     "lerobot[evo1]",
     "lerobot[hilserl]",

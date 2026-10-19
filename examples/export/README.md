@@ -21,7 +21,7 @@ uv venv --python 3.12
 source .venv/bin/activate
 uv pip install \
     -e ".[smolvla,pi,groot,feetech,export]" \
-    "torch-tensorrt[executorch]" onnx onnxscript \
+    "torch-tensorrt[executorch]" \
     --index-url https://download.pytorch.org/whl/nightly/cu132 \
     --extra-index-url https://pypi.org/simple \
     --extra-index-url https://pypi.nvidia.com \
