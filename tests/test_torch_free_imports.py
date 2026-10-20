@@ -257,7 +257,7 @@ from types import SimpleNamespace
 import numpy as np
 from safetensors.numpy import save_file
 
-folder, backend = Path(sys.argv[1]), sys.argv[2]
+folder, backend, planner = Path(sys.argv[1]), sys.argv[2], sys.argv[4] == "planner"
 sys.path.insert(0, sys.argv[3])
 state = np.array([1, 2, 3], dtype=np.float32)
 save_file({"observation.state": state, "expected_actions": np.stack([state, 2 * state])}, folder / "case.safetensors")
@@ -341,6 +341,12 @@ sys.argv = [
     "lerobot-rollout", f"--policy.path={folder}", "--robot.type=mock_robot", "--robot.random_values=false",
     "--robot.static_values=[1,2,3]", "--strategy.type=base", "--duration=0.3", "--fps=20",
 ]
+if planner:
+    from lerobot.rollout import planner as planner_module
+
+    # No VLM answers here; the rollout only sets the planner up, which reads the checkpoint's vocabulary.
+    planner_module.make_vlm_client = lambda config: SimpleNamespace()
+    sys.argv.append("--planner.model_id=planner")
 lerobot_rollout.main()
 
 if attempts:
@@ -360,9 +366,13 @@ if backend == "executorch_trt":
 
 
 @pytest.mark.skipif(not _datasets_available, reason="datasets not installed")
+@pytest.mark.parametrize("planner", ["", "planner"], ids=["no_planner", "planner"])
 @pytest.mark.parametrize("backend", ["executorch_trt", "onnx_trt"])
-def test_rollout_runs_an_export_with_torch_unimportable(tmp_path, backend):
-    """`lerobot-rollout` loads an ExecuTorch-TensorRT or ONNX-TensorRT folder and drives a robot without torch."""
+def test_rollout_runs_an_export_with_torch_unimportable(tmp_path, backend, planner):
+    """`lerobot-rollout` loads an ExecuTorch-TensorRT or ONNX-TensorRT folder and drives a robot without torch.
+
+    With a planner, the rollout also looks for the vocabulary of the dataset the checkpoint was trained on.
+    """
     fake = tmp_path / "fake"
     (fake / "executorch").mkdir(parents=True)
     (fake / "executorch" / "__init__.py").write_text("")
@@ -379,7 +389,7 @@ def test_rollout_runs_an_export_with_torch_unimportable(tmp_path, backend):
         "EXECUTORCH_PYBINDINGS_TENSOR_OUTPUT": "torch",
     }
     result = subprocess.run(
-        [sys.executable, "-c", ROLLOUT_WITHOUT_TORCH, str(folder), backend, str(repo)],
+        [sys.executable, "-c", ROLLOUT_WITHOUT_TORCH, str(folder), backend, str(repo), planner],
         capture_output=True,
         text=True,
         timeout=300,

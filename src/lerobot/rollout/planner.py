@@ -289,9 +289,6 @@ def training_vocabulary(pretrained_path: str) -> list[str]:
     dataset's ``meta/tasks.parquet``. This is an inference, not a contract: task labels are
     examples of what the policy saw, not a proof of everything it follows.
     """
-    # lerobot.datasets imports torch, which the rollout command must not load at startup.
-    from lerobot.datasets.utils import DEFAULT_TASKS_PATH
-
     path = Path(pretrained_path)
     config_file = (
         path / "train_config.json"
@@ -302,6 +299,9 @@ def training_vocabulary(pretrained_path: str) -> list[str]:
     repo_id = data.get("dataset", {}).get("repo_id")
     if not repo_id:
         raise ValueError(f"{config_file} names no training dataset")
+    # Imported only here because lerobot.datasets loads torch, and an exported folder never gets this far.
+    from lerobot.datasets.utils import DEFAULT_TASKS_PATH
+
     tasks = pd.read_parquet(hf_hub_download(repo_id, DEFAULT_TASKS_PATH, repo_type="dataset"))
     column = tasks["task"] if "task" in tasks.columns else tasks.index
     return sorted({str(task) for task in column})
