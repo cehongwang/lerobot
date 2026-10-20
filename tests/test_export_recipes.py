@@ -97,7 +97,8 @@ def act_checkpoint(path):
     config = ACTConfig(
         device="cpu",
         chunk_size=4,
-        n_action_steps=4,
+        # Fewer actions played than predicted, so a program that skips the trim cannot pass.
+        n_action_steps=2,
         dim_model=16,
         n_heads=2,
         dim_feedforward=32,
@@ -213,7 +214,7 @@ def smolvla_checkpoint(path, vlm):
         load_vlm_weights=False,
         num_vlm_layers=2,
         chunk_size=4,
-        n_action_steps=4,
+        n_action_steps=2,
         max_state_dim=6,
         max_action_dim=6,
         num_steps=2,
@@ -301,7 +302,7 @@ def pi05_checkpoint(path, monkeypatch):
         dtype=torch.float32,
         image_resolution=(28, 28),
         chunk_size=4,
-        n_action_steps=4,
+        n_action_steps=2,
         max_state_dim=8,
         max_action_dim=8,
         num_inference_steps=2,
