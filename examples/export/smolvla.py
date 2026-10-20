@@ -22,27 +22,23 @@ and the task come from the training dataset, because SmolVLA's checkpoint only n
 
 import argparse
 from collections.abc import Iterator
-from copy import copy
 
 import torch
 from export import (
     Part,
     add_dataset_arguments,
-    dataset_task,
+    dataset_frame,
     device,
-    frame_from_dataset,
     processors,
     to_policy_input,
     write_folder,
 )
 from torch import Tensor, nn
 
-from lerobot.datasets import LeRobotDatasetMetadata
 from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy
 from lerobot.policies.utils import prepare_observation_for_inference
 from lerobot.processor import NewLineTaskProcessorStep, PolicyProcessorPipeline, TokenizerProcessorStep
 from lerobot.utils.constants import ACTION, OBS_LANGUAGE_ATTENTION_MASK, OBS_LANGUAGE_TOKENS
-from lerobot.utils.feature_utils import dataset_to_policy_features
 
 # TensorRT reorders bfloat16 math, so actions drift by up to about 4; wrong noise gives 13 or more.
 TOLERANCE = 5.0
@@ -92,13 +88,7 @@ class Export:
     def __init__(self, args: argparse.Namespace):
         self.args = args
         self.policy = SmolVLAPolicy.from_pretrained(args.policy_path).to(device()).eval()
-        metadata = LeRobotDatasetMetadata(args.dataset, root=args.dataset_root)
-        self.task = dataset_task(metadata, args.task)
-        self.frame = frame_from_dataset(metadata.features)
-        # The folder takes the robot's cameras, so its config names them, not the checkpoint's placeholders.
-        self.config = copy(self.policy.config)
-        features = dataset_to_policy_features(metadata.features)
-        self.config.input_features = {name: features[name] for name in self.frame}
+        self.task, self.frame, self.config = dataset_frame(args, self.policy.config)
         self.noise = torch.randn(self.config.chunk_size, self.config.max_action_dim, device=device())
         self.expected_actions = self.rollout_actions()
 

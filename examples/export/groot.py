@@ -36,9 +36,8 @@ from export import (
     ChunkActions,
     Part,
     add_dataset_arguments,
-    dataset_task,
+    dataset_frame,
     device,
-    frame_from_dataset,
     free_memory,
     processors,
     to_policy_input,
@@ -49,7 +48,6 @@ from transformers.models.qwen3_vl.modeling_qwen3_vl import apply_rotary_pos_emb_
 from transformers.utils import cached_file
 
 from lerobot.configs import PreTrainedConfig
-from lerobot.datasets import LeRobotDatasetMetadata
 from lerobot.inference.export.images import resize_images
 from lerobot.policies.groot.groot_n1_7 import CategorySpecificLinear, GR00TN17Config
 from lerobot.policies.groot.modeling_groot import GrootPolicy
@@ -61,7 +59,6 @@ from lerobot.policies.groot.processor_groot import (
 from lerobot.policies.utils import prepare_observation_for_inference
 from lerobot.processor import PolicyProcessorPipeline, RenameObservationsProcessorStep
 from lerobot.utils.constants import ACTION, OBS_STATE
-from lerobot.utils.feature_utils import dataset_to_policy_features
 
 TOLERANCE = 5.0
 VISION = "_groot_model.backbone.model.model.visual"
@@ -445,13 +442,7 @@ class Export:
         self.horizon = self.policy._action_queue_steps
         preprocessor, self.postprocessor = processors(self.config, args.policy_path)
         check_traceable_decode(self.postprocessor, args.route)
-        metadata = LeRobotDatasetMetadata(args.dataset, root=args.dataset_root)
-        self.task = dataset_task(metadata, args.task)
-        self.frame = frame_from_dataset(metadata.features)
-        # The folder takes the robot's cameras, so its config names them, not the checkpoint's placeholders.
-        self.folder_config = copy(self.config)
-        features = dataset_to_policy_features(metadata.features)
-        self.folder_config.input_features = {name: features[name] for name in self.frame}
+        self.task, self.frame, self.folder_config = dataset_frame(args, self.config)
         self.batch = preprocessor(prepare_observation_for_inference(dict(self.frame), device(), self.task))
         self.frame_processor = GrootObservation(preprocessor, self.frame, self.batch).to(device())
         self.image_resize = self.frame_processor.image_resize

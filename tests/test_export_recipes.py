@@ -251,9 +251,10 @@ def test_smolvla_exports_for_the_robots_cameras_and_reproduces_its_test_case(rec
         "observation.state": {"dtype": "float32", "shape": (3,), "names": None},
         "action": {"dtype": "float32", "shape": (3,), "names": None},
     }
-    smolvla = importlib.import_module("smolvla")
     metadata = dataset_metadata(features, ["pick the cup", "open the drawer"])
-    monkeypatch.setattr(smolvla, "LeRobotDatasetMetadata", lambda repo_id, root=None: metadata)
+    monkeypatch.setattr(
+        importlib.import_module("export"), "LeRobotDatasetMetadata", lambda repo_id, root=None: metadata
+    )
     args = Namespace(
         policy_path=str(checkpoint),
         output_dir=tmp_path / "folder",

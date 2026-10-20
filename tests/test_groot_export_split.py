@@ -597,7 +597,6 @@ def test_task_must_be_one_of_the_dataset_tasks(recipe):
     assert smolvla.dataset_task(metadata, "open the drawer") == "open the drawer"
     with pytest.raises(ValueError, match="one of the dataset's tasks"):
         smolvla.dataset_task(metadata, "close the drawer")
-    assert recipe.dataset_task is smolvla.dataset_task
 
 
 def test_relative_actions_follow_the_robot_state_after_export(recipe):

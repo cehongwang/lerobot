@@ -29,6 +29,7 @@ import json
 import subprocess
 import sys
 from collections.abc import Callable
+from copy import copy
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +49,7 @@ from lerobot.processor import (
     to_absolute_actions,
 )
 from lerobot.utils.constants import ACTION, OBS_STATE, OBS_STR
+from lerobot.utils.feature_utils import dataset_to_policy_features
 
 POLICIES = ("act", "smolvla", "pi05", "groot")
 TEST_CASE = "test_case.safetensors"
@@ -269,6 +271,19 @@ def dataset_task(metadata: LeRobotDatasetMetadata, task: str | None) -> str:
     if task not in tasks:
         raise ValueError(f"--task must be one of the dataset's tasks: {tasks}.")
     return task
+
+
+def dataset_frame(args: argparse.Namespace, config: PreTrainedConfig) -> tuple[str, dict, PreTrainedConfig]:
+    """The task, a frame named like the robot's in the training dataset, and `config` naming that frame.
+
+    The folder takes the robot's cameras, so its config names them, not the checkpoint's placeholders.
+    """
+    metadata = LeRobotDatasetMetadata(args.dataset, root=args.dataset_root)
+    frame = frame_from_dataset(metadata.features)
+    folder_config = copy(config)
+    features = dataset_to_policy_features(metadata.features)
+    folder_config.input_features = {name: features[name] for name in frame}
+    return dataset_task(metadata, args.task), frame, folder_config
 
 
 def anchored_postprocessor(postprocessor: PolicyProcessorPipeline) -> tuple[PolicyProcessorPipeline, Any]:
