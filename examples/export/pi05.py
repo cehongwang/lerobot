@@ -31,10 +31,8 @@ from copy import copy
 
 import torch
 from export import (
+    ChunkActions,
     Part,
-    absolute_actions,
-    actions_inputs,
-    anchored_postprocessor,
     device,
     frame_from_policy,
     free_memory,
@@ -174,23 +172,6 @@ class PI05Step(nn.Module):
         with torch.autocast("cuda", dtype=torch.bfloat16):
             velocity = self.model.denoise_step(prefix_pad_masks, past_key_values, x_t[None], timestep)
         return x_t + self.dt * velocity[0].float()
-
-
-class PI05Actions(nn.Module):
-    """The end of the chunk: the denoised actions and the robot's state in, the actions to play out.
-
-    A policy trained on actions relative to the state turns them back around the state it takes here.
-    """
-
-    def __init__(self, policy: PI05Policy, postprocessor: PolicyProcessorPipeline):
-        super().__init__()
-        self.policy = policy
-        self.postprocessor, self.absolute_step = anchored_postprocessor(postprocessor)
-
-    def forward(self, x_0: Tensor, state: Tensor | None = None) -> Tensor:
-        action_dim = self.policy.config.output_features[ACTION].shape[0]
-        actions = self.postprocessor(x_0[None, : self.policy.config.n_action_steps, :action_dim])
-        return absolute_actions(actions, state, self.absolute_step)[0]
 
 
 class PI05Embed(nn.Module):
@@ -355,12 +336,13 @@ class Export:
         yield Part("step", step, step_inputs, ["prefix_pad_masks", *cache, "x_t", "timestep"], ["x_next"])
         del step
         free_memory()
-        actions = PI05Actions(self.load_part(), self.postprocessor)
+        actions = ChunkActions(
+            self.config.n_action_steps, self.config.output_features[ACTION].shape[0], self.postprocessor
+        )
         state = torch.from_numpy(self.frame[OBS_STATE]).to(device())
         with torch.no_grad():
             self.expected_actions = actions(x_t, state).cpu().numpy()
-        inputs, names = actions_inputs(actions.absolute_step, self.noise, state)
-        yield Part("actions", actions, inputs, names, [ACTION])
+        yield actions.part(self.noise, state)
 
     def write(self, programs: dict[str, dict], args: argparse.Namespace) -> None:
         write_folder(

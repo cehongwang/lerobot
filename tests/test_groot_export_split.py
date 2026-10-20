@@ -345,7 +345,7 @@ def test_step_slices_and_program_chain_match_action_head(recipe, alternate, inte
             return value
 
     programs = {f"step_{i}": Program(part, f"step_{i}") for i, part in enumerate(parts)}
-    programs["actions"] = Program(recipe.GrootActions(2, 3, action_pipeline()), "actions")
+    programs["actions"] = Program(recipe.ChunkActions(2, 3, action_pipeline()), "actions")
     names = {
         "step_0": (["vl", "state", "x_t", "timestep"], ["hidden", "temb"]),
         "step_1": (["vl", "hidden", "temb"], ["hidden"]),
@@ -518,7 +518,7 @@ def test_actions_apply_the_postprocessor_after_slicing(recipe):
         def transform_features(self, features):
             return features
 
-    part = recipe.GrootActions(2, 3, action_pipeline(ScaleByHorizon()))
+    part = recipe.ChunkActions(2, 3, action_pipeline(ScaleByHorizon()))
     values = torch.arange(20).reshape(4, 5).float()
     state = torch.zeros(6)
     torch.testing.assert_close(part(values, state), values[:2, :3] * 2 + 3)
@@ -556,7 +556,7 @@ def test_numpy_action_decoding_exports_to_onnx_and_follows_new_actions(recipe, t
     onnxruntime = pytest.importorskip("onnxruntime")
     pytest.importorskip("onnxscript")
 
-    module = recipe.GrootActions(2, 3, action_pipeline(n17_decoder())).eval()
+    module = recipe.ChunkActions(2, 3, action_pipeline(n17_decoder())).eval()
     actions, state = torch.rand(4, 3) * 2 - 1, torch.zeros(3)
     path = tmp_path / "actions.onnx"
     torch.onnx.export(
@@ -600,19 +600,13 @@ def test_task_must_be_one_of_the_dataset_tasks(recipe):
     assert recipe.dataset_task is smolvla.dataset_task
 
 
-@pytest.mark.parametrize("policy", ["pi05", "groot"])
-def test_relative_actions_follow_the_robot_state_after_export(recipe, policy):
+def test_relative_actions_follow_the_robot_state_after_export(recipe):
     from lerobot.processor import AbsoluteActionsProcessorStep, RelativeActionsProcessorStep, TransitionKey
 
     relative = RelativeActionsProcessorStep(enabled=True)
     relative({TransitionKey.OBSERVATION: {"observation.state": torch.full((1, 3), 50.0)}})
     postprocessor = action_pipeline(AbsoluteActionsProcessorStep(enabled=True, relative_step=relative))
-    if policy == "groot":
-        part = recipe.GrootActions(2, 3, postprocessor)
-    else:
-        pi05 = importlib.import_module("pi05")
-        config = SimpleNamespace(n_action_steps=2, output_features={"action": SimpleNamespace(shape=(3,))})
-        part = pi05.PI05Actions(SimpleNamespace(config=config), postprocessor)
+    part = recipe.ChunkActions(2, 3, postprocessor)
     offsets = torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]])
     program = torch.export.export(part, (offsets, torch.full((3,), 50.0))).module()
     moved = torch.tensor([-5.0, 0.0, 5.0])
@@ -620,24 +614,16 @@ def test_relative_actions_follow_the_robot_state_after_export(recipe, policy):
 
 
 @pytest.mark.parametrize("relative", [False, True])
-@pytest.mark.parametrize("policy", ["pi05", "groot"])
-def test_actions_program_takes_the_state_only_when_it_reads_it(recipe, policy, relative):
+def test_actions_program_takes_the_state_only_when_it_reads_it(recipe, relative):
     """An input the program never reads stays on the host, where the rollout cannot hand it one."""
     from lerobot.processor import AbsoluteActionsProcessorStep, RelativeActionsProcessorStep
 
     relative_step = RelativeActionsProcessorStep(enabled=True)
     absolute_step = AbsoluteActionsProcessorStep(enabled=True, relative_step=relative_step)
     postprocessor = action_pipeline(absolute_step) if relative else action_pipeline()
-    if policy == "groot":
-        part = recipe.GrootActions(2, 3, postprocessor)
-    else:
-        pi05 = importlib.import_module("pi05")
-        config = SimpleNamespace(n_action_steps=2, output_features={"action": SimpleNamespace(shape=(3,))})
-        part = pi05.PI05Actions(SimpleNamespace(config=config), postprocessor)
-    inputs, names = importlib.import_module("export").actions_inputs(
-        part.absolute_step, torch.zeros(3, 3), torch.zeros(3)
-    )
-    program = torch.export.export(part, inputs)
+    part = recipe.ChunkActions(2, 3, postprocessor).part(torch.zeros(3, 3), torch.zeros(3))
+    inputs, names = part.inputs, part.input_names
+    program = torch.export.export(part.module, inputs)
     user_inputs = set(program.graph_signature.user_inputs)
     unread = [n.name for n in program.graph.nodes if n.name in user_inputs and not n.users]
     assert unread == []

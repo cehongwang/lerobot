@@ -33,11 +33,9 @@ import numpy as np
 import torch
 import torch.nn.functional as F  # noqa: N812
 from export import (
+    ChunkActions,
     Part,
-    absolute_actions,
-    actions_inputs,
     add_dataset_arguments,
-    anchored_postprocessor,
     dataset_task,
     device,
     frame_from_dataset,
@@ -433,22 +431,6 @@ def check_traceable_decode(postprocessor: PolicyProcessorPipeline, route: str) -
         )
 
 
-class GrootActions(nn.Module):
-    """The end of the chunk: the denoised actions and the robot's state in, the actions to play out, in robot units.
-
-    A policy trained on actions relative to the state turns them back around the state it takes here.
-    """
-
-    def __init__(self, horizon: int, action_dim: int, postprocessor: PolicyProcessorPipeline):
-        super().__init__()
-        self.horizon, self.action_dim = horizon, action_dim
-        self.postprocessor, self.absolute_step = anchored_postprocessor(postprocessor)
-
-    def forward(self, actions: Tensor, state: Tensor | None = None) -> Tensor:
-        actions = self.postprocessor(actions[None, : self.horizon, : self.action_dim])
-        return absolute_actions(actions, state, self.absolute_step)[0]
-
-
 class Export:
     """Reads a trained GR00T N1.7 checkpoint one part at a time, and writes the folder around its programs."""
 
@@ -611,12 +593,11 @@ class Export:
                     names = ["vl_embeds", f"step_hidden_{group}", "temb"]
                 del module
         free_memory()
-        module = GrootActions(self.horizon, self.config.output_features[ACTION].shape[0], self.postprocessor)
+        module = ChunkActions(self.horizon, self.config.output_features[ACTION].shape[0], self.postprocessor)
         state = torch.from_numpy(self.frame[OBS_STATE]).to(device())
         with torch.no_grad():
             self.expected_actions = module(actions, state).float().cpu().numpy()
-        inputs, names = actions_inputs(module.absolute_step, actions, state)
-        yield Part("actions", module, inputs, names, [ACTION])
+        yield module.part(actions, state)
 
     def write(self, programs: dict[str, dict], args: argparse.Namespace) -> None:
         write_folder(

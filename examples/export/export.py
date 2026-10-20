@@ -47,7 +47,7 @@ from lerobot.processor import (
     PolicyProcessorPipeline,
     to_absolute_actions,
 )
-from lerobot.utils.constants import OBS_STATE, OBS_STR
+from lerobot.utils.constants import ACTION, OBS_STATE, OBS_STR
 
 POLICIES = ("act", "smolvla", "pi05", "groot")
 TEST_CASE = "test_case.safetensors"
@@ -275,7 +275,7 @@ def anchored_postprocessor(postprocessor: PolicyProcessorPipeline) -> tuple[Poli
     """The postprocessor's steps before its relative-to-absolute step, and that step.
 
     That step adds the state the preprocessor cached in Python, which an exported program would keep as a
-    constant. A program applies it to the state it takes as an input instead, with `absolute_actions`.
+    constant. `ChunkActions` applies it to the state the program takes as an input instead.
     """
     steps = list(postprocessor.steps)
     index = next(
@@ -288,22 +288,34 @@ def anchored_postprocessor(postprocessor: PolicyProcessorPipeline) -> tuple[Poli
     return dataclasses.replace(postprocessor, steps=steps[:index]), steps[index]
 
 
-def absolute_actions(actions: Tensor, state: Tensor | None, step: Any) -> Tensor:
-    """`step`'s relative-to-absolute conversion of a (1, steps, joints) chunk, around the robot's `state`."""
-    if step is None:
-        return actions
-    return to_absolute_actions(actions, state[None], step.relative_step._build_mask(actions.shape[-1]))
+class ChunkActions(nn.Module):
+    """The end of a chain: the denoised actions in, the actions to play out, in robot units.
 
-
-def actions_inputs(step: Any, actions: Tensor, state: Tensor) -> tuple[tuple[Tensor, ...], list[str]]:
-    """The last program's inputs and their names: the denoised actions, and the state only if `step` reads it.
-
-    The rollout hands a program every input on the GPU, but the export places on the GPU only the inputs the
-    program reads, so a state it never reads would stay a host input that the rollout cannot feed.
+    A policy trained on actions relative to the state turns them back around the robot's state, which the
+    program then takes as an input too.
     """
-    if step is None:
-        return (actions,), ["x_t"]
-    return (actions, state), ["x_t", OBS_STATE]
+
+    def __init__(self, horizon: int, action_dim: int, postprocessor: PolicyProcessorPipeline):
+        super().__init__()
+        self.horizon, self.action_dim = horizon, action_dim
+        self.postprocessor, self.absolute_step = anchored_postprocessor(postprocessor)
+
+    def forward(self, actions: Tensor, state: Tensor | None = None) -> Tensor:
+        actions = self.postprocessor(actions[None, : self.horizon, : self.action_dim])
+        if self.absolute_step is not None:
+            mask = self.absolute_step.relative_step._build_mask(actions.shape[-1])
+            actions = to_absolute_actions(actions, state[None], mask)
+        return actions[0]
+
+    def part(self, actions: Tensor, state: Tensor) -> Part:
+        """The last part, which takes the state only if it reads it.
+
+        The rollout hands a program every input on the GPU, but the export places on the GPU only the inputs
+        the program reads, so a state it never reads would stay a host input that the rollout cannot feed.
+        """
+        if self.absolute_step is None:
+            return Part("actions", self, (actions,), ["x_t"], [ACTION])
+        return Part("actions", self, (actions, state), ["x_t", OBS_STATE], [ACTION])
 
 
 def free_memory() -> None:
