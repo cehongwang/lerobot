@@ -33,7 +33,6 @@ from lerobot.processor import PolicyProcessorPipeline
 from lerobot.utils.constants import ACTION
 
 TOLERANCE = 0.5
-CUDA_GRAPHS = True
 
 
 class ACTChunk(nn.Module):
@@ -106,5 +105,4 @@ class Export:
             None,
             self.expected_actions,
             programs,
-            cuda_graphs=CUDA_GRAPHS,
         )

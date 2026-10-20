@@ -302,7 +302,7 @@ def test_engine_records_one_cuda_graph_and_replays_it(tmp_path, fake_cuda, fake_
         lambda stream, mode: queued_before_capture.append(fake_engine[0].enqueued)
         or begin_capture(stream, mode),
     )
-    engine = backend.TensorRTEngine(tmp_path / "model.engine", ["x"], ["y"], cuda_graphs=True)
+    engine = backend.TensorRTEngine(tmp_path / "model.engine", ["x"], ["y"])
     np.testing.assert_array_equal(engine(np.ones((1, 3))), [[2, 2, 2]])
     np.testing.assert_array_equal(engine(np.full((1, 3), 3.0)), [[6, 6, 6]])
     # TensorRT updates its state on the first run, so the graph records the second; later runs replay it.
@@ -313,13 +313,13 @@ def test_engine_records_one_cuda_graph_and_replays_it(tmp_path, fake_cuda, fake_
 
 
 def test_engine_graph_refuses_an_input_buffer_it_did_not_record(tmp_path, fake_cuda, fake_engine):
-    engine = backend.TensorRTEngine(tmp_path / "model.engine", ["x"], ["y"], cuda_graphs=True)
+    engine = backend.TensorRTEngine(tmp_path / "model.engine", ["x"], ["y"])
     engine.run_device(backend.CudaBuffer((1, 3), np.float32))
     with pytest.raises(ValueError, match="same ones every run"):
         engine.run_device(backend.CudaBuffer((1, 3), np.float32))
 
 
-def test_a_split_denoising_step_runs_with_cuda_graphs(tmp_path, fake_cuda, fake_engine):
+def test_a_split_denoising_step_runs_with_a_cuda_graph_per_engine(tmp_path, fake_cuda, fake_engine):
     """GR00T's shape: the step is two engines, so the first reads x_t from the noise, then from the last."""
     from lerobot.inference.export.engine import ProgramChain
 
@@ -328,7 +328,7 @@ def test_a_split_denoising_step_runs_with_cuda_graphs(tmp_path, fake_cuda, fake_
         "step_1": {"file": "step_1.engine", "inputs": ["hidden", "x_t"], "outputs": ["x_next"]},
         "actions": {"file": "actions.engine", "inputs": ["x_t"], "outputs": ["action"]},
     }
-    engines = backend.load_engines(tmp_path, programs, cuda_graphs=True)
+    engines = backend.load_engines(tmp_path, programs)
     info = {
         "inputs": ["noise"],
         "programs": programs,
@@ -427,10 +427,7 @@ def test_chained_engines_share_scratch_and_keep_the_cache_on_device(tmp_path, mo
         "actions": {"file": "actions.engine", "inputs": ["x_t"], "outputs": ["action"]},
     }
     engines = backend.load_engines(tmp_path, programs)
-    assert all(
-        engine.kwargs == {"own_scratch": False, "stream": "stream", "cuda_graphs": False}
-        for engine in engines.values()
-    )
+    assert all(engine.kwargs == {"own_scratch": False, "stream": "stream"} for engine in engines.values())
     assert len(scratch) == 3 and all(buffer is scratch[0] for buffer in scratch)
     info = {
         "inputs": ["state", "noise"],

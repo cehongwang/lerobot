@@ -68,7 +68,7 @@ def load_programs(folder: Path, info: dict) -> Mapping[str, Program]:
     if backend == "onnx_trt":
         from .tensorrt import load_engines
 
-        return load_engines(folder, programs, info.get("cuda_graphs", False))
+        return load_engines(folder, programs)
     if backend == "executorch_trt":
         from .executorch import ExecuTorchProgram
 

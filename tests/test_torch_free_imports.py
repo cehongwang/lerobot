@@ -152,7 +152,6 @@ def write_folder(folder, backend, camera):
         "timesteps": [1.0, 0.5],
         "test_case": "case.safetensors",
         "tolerance": 0.0,
-        "cuda_graphs": True,
     }
     if camera:
         info["image_resize"] = {

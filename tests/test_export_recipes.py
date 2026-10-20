@@ -128,7 +128,7 @@ def test_act_exports_and_reproduces_its_test_case(recipes, tmp_path, monkeypatch
     info = __import__("json").loads((args.output_dir / "export.json").read_text())
     assert list(info["programs"]) == ["model"]
     assert info["inputs"] == ["observation.images.front", "observation.state"]
-    assert info["cuda_graphs"] is True and "noise_shape" not in info
+    assert "noise_shape" not in info
     frame = {
         "observation.images.front": np.zeros((32, 32, 3), np.uint8),
         "observation.state": np.zeros(3, np.float32),

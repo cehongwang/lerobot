@@ -64,8 +64,6 @@ from lerobot.utils.constants import ACTION, OBS_STATE
 from lerobot.utils.feature_utils import dataset_to_policy_features
 
 TOLERANCE = 5.0
-# TensorRT cannot record this chain of engines in one CUDA graph (the capture is invalidated).
-CUDA_GRAPHS = False
 VISION = "_groot_model.backbone.model.model.visual"
 LANGUAGE_MODEL = "_groot_model.backbone.model.model.language_model"
 ACTION_HEAD = "_groot_model.action_head"
@@ -680,5 +678,4 @@ class Export:
             task=self.task,
             # The task's token ids and rope positions are constants inside the programs.
             task_fixed=True,
-            cuda_graphs=CUDA_GRAPHS,
         )

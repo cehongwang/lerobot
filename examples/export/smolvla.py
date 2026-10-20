@@ -46,7 +46,6 @@ from lerobot.utils.feature_utils import dataset_to_policy_features
 
 # TensorRT reorders bfloat16 math, so actions drift by up to about 4; wrong noise gives 13 or more.
 TOLERANCE = 5.0
-CUDA_GRAPHS = True
 
 
 class SmolVLAChunk(nn.Module):
@@ -140,5 +139,4 @@ class Export:
             task=self.task,
             # The program holds the task's token ids.
             task_fixed=True,
-            cuda_graphs=CUDA_GRAPHS,
         )
