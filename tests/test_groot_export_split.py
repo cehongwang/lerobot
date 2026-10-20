@@ -587,6 +587,31 @@ def test_relative_actions_follow_the_robot_state_after_export(recipe, policy):
     torch.testing.assert_close(program(offsets, moved), offsets[:2] + moved)
 
 
+@pytest.mark.parametrize("relative", [False, True])
+@pytest.mark.parametrize("policy", ["pi05", "groot"])
+def test_actions_program_takes_the_state_only_when_it_reads_it(recipe, policy, relative):
+    """An input the program never reads stays on the host, where the rollout cannot hand it one."""
+    from lerobot.processor import AbsoluteActionsProcessorStep, RelativeActionsProcessorStep
+
+    relative_step = RelativeActionsProcessorStep(enabled=True)
+    absolute_step = AbsoluteActionsProcessorStep(enabled=True, relative_step=relative_step)
+    postprocessor = action_pipeline(absolute_step) if relative else action_pipeline()
+    if policy == "groot":
+        part = recipe.GrootActions(2, 3, postprocessor)
+    else:
+        pi05 = importlib.import_module("pi05")
+        config = SimpleNamespace(n_action_steps=2, output_features={"action": SimpleNamespace(shape=(3,))})
+        part = pi05.PI05Actions(SimpleNamespace(config=config), postprocessor)
+    inputs, names = importlib.import_module("export").actions_inputs(
+        part.absolute_step, torch.zeros(3, 3), torch.zeros(3)
+    )
+    program = torch.export.export(part, inputs)
+    user_inputs = set(program.graph_signature.user_inputs)
+    unread = [n.name for n in program.graph.nodes if n.name in user_inputs and not n.users]
+    assert unread == []
+    assert names == (["x_t", "observation.state"] if relative else ["x_t"])
+
+
 def test_part_names_cover_remainders_and_reject_unknown_parts(recipe, monkeypatch):
     monkeypatch.setattr(
         recipe.PreTrainedConfig, "from_pretrained", lambda path: SimpleNamespace(base_model_path="base")

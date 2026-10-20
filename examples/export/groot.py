@@ -35,6 +35,7 @@ import torch.nn.functional as F  # noqa: N812
 from export import (
     Part,
     absolute_actions,
+    actions_inputs,
     add_dataset_arguments,
     anchored_postprocessor,
     dataset_task,
@@ -491,9 +492,9 @@ class GrootActions(nn.Module):
         self.horizon, self.action_dim = horizon, action_dim
         self.postprocessor, self.absolute_step = anchored_postprocessor(postprocessor)
 
-    def forward(self, actions: Tensor, state: Tensor) -> Tensor:
+    def forward(self, actions: Tensor, state: Tensor | None = None) -> Tensor:
         actions = self.postprocessor(actions[None, : self.horizon, : self.action_dim])
-        return absolute_actions(actions, state[None], self.absolute_step)[0]
+        return absolute_actions(actions, state, self.absolute_step)[0]
 
 
 class Export:
@@ -662,7 +663,8 @@ class Export:
         state = torch.from_numpy(self.frame[OBS_STATE]).to(device())
         with torch.no_grad():
             self.expected_actions = module(actions, state).float().cpu().numpy()
-        yield Part("actions", module, (actions, state), ["x_t", OBS_STATE], [ACTION])
+        inputs, names = actions_inputs(module.absolute_step, actions, state)
+        yield Part("actions", module, inputs, names, [ACTION])
 
     def write(self, programs: dict[str, dict], args: argparse.Namespace) -> None:
         write_folder(

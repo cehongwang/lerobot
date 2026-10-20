@@ -33,6 +33,7 @@ import torch
 from export import (
     Part,
     absolute_actions,
+    actions_inputs,
     anchored_postprocessor,
     device,
     frame_from_policy,
@@ -186,10 +187,10 @@ class PI05Actions(nn.Module):
         self.policy = policy
         self.postprocessor, self.absolute_step = anchored_postprocessor(postprocessor)
 
-    def forward(self, x_0: Tensor, state: Tensor) -> Tensor:
+    def forward(self, x_0: Tensor, state: Tensor | None = None) -> Tensor:
         action_dim = self.policy.config.output_features[ACTION].shape[0]
         actions = self.postprocessor(x_0[None, : self.policy.config.n_action_steps, :action_dim])
-        return absolute_actions(actions, state[None], self.absolute_step)[0]
+        return absolute_actions(actions, state, self.absolute_step)[0]
 
 
 class PI05Embed(nn.Module):
@@ -358,7 +359,8 @@ class Export:
         state = torch.from_numpy(self.frame[OBS_STATE]).to(device())
         with torch.no_grad():
             self.expected_actions = actions(x_t, state).cpu().numpy()
-        yield Part("actions", actions, (self.noise, state), ["x_t", OBS_STATE], [ACTION])
+        inputs, names = actions_inputs(actions.absolute_step, self.noise, state)
+        yield Part("actions", actions, inputs, names, [ACTION])
 
     def write(self, programs: dict[str, dict], args: argparse.Namespace) -> None:
         write_folder(

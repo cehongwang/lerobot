@@ -46,7 +46,7 @@ from lerobot.processor import (
     PolicyProcessorPipeline,
     to_absolute_actions,
 )
-from lerobot.utils.constants import OBS_STR
+from lerobot.utils.constants import OBS_STATE, OBS_STR
 
 POLICIES = ("act", "smolvla", "pi05", "groot")
 TEST_CASE = "test_case.safetensors"
@@ -286,11 +286,22 @@ def anchored_postprocessor(postprocessor: PolicyProcessorPipeline) -> tuple[Poli
     return dataclasses.replace(postprocessor, steps=steps[:index]), steps[index]
 
 
-def absolute_actions(actions: Tensor, state: Tensor, step: Any) -> Tensor:
-    """`step`'s relative-to-absolute conversion of a (batch, steps, joints) chunk, around `state`."""
+def absolute_actions(actions: Tensor, state: Tensor | None, step: Any) -> Tensor:
+    """`step`'s relative-to-absolute conversion of a (1, steps, joints) chunk, around the robot's `state`."""
     if step is None:
         return actions
-    return to_absolute_actions(actions, state, step.relative_step._build_mask(actions.shape[-1]))
+    return to_absolute_actions(actions, state[None], step.relative_step._build_mask(actions.shape[-1]))
+
+
+def actions_inputs(step: Any, actions: Tensor, state: Tensor) -> tuple[tuple[Tensor, ...], list[str]]:
+    """The last program's inputs and their names: the denoised actions, and the state only if `step` reads it.
+
+    The rollout hands a program every input on the GPU, but the export places on the GPU only the inputs the
+    program reads, so a state it never reads would stay a host input that the rollout cannot feed.
+    """
+    if step is None:
+        return (actions,), ["x_t"]
+    return (actions, state), ["x_t", OBS_STATE]
 
 
 def free_memory() -> None:

@@ -67,6 +67,11 @@ def export_with_replay(recipe_name, args, monkeypatch):
     compiled = {}
 
     def compile_part(part, path):
+        # The rollout hands every input on the GPU; the export places there only the inputs a program reads.
+        program = torch.export.export(part.module, part.inputs)
+        user_inputs = set(program.graph_signature.user_inputs)
+        unread = [n.name for n in program.graph.nodes if n.name in user_inputs and not n.users]
+        assert not unread, f"{part.name} takes inputs it never reads: {unread}"
         path.write_bytes(b"")
         compiled[path.name] = Replay(part.module)
 
