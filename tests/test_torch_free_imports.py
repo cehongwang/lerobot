@@ -97,141 +97,214 @@ def test_imports_without_torch(module):
     assert result.returncode == 0, result.stderr
 
 
-def test_executorch_export_runs_without_importing_torch(tmp_path):
-    """With torch installed, the rollout reads an ExecuTorch-TensorRT folder and runs it without importing torch."""
-    code = r"""
+# Stand-ins for the compiled programs and both torch-free runtimes, imported from disk the way the real
+# packages are. The chain has the shape of a flow-matching policy: a prefix, a denoising step run once per
+# timestep, and the actions, with fresh noise each chunk and, optionally, a camera the engine resizes.
+EXPORT_FAKES = """
+import ctypes
 import json
-import sys
-from dataclasses import dataclass
-from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 from safetensors.numpy import save_file
 
-from lerobot.configs import parser
-from lerobot.inference.export import ExportInferenceEngine
-from lerobot.robots.config import RobotConfig
-from lerobot.rollout.configs import RolloutConfig
-
-folder = Path(sys.argv[1])
-info = {
-    "backend": "executorch_trt",
-    "programs": {
-        "model": {
-            "file": "model.pte",
-            "inputs": ["observation.state", "observation.images.camera"],
-            "outputs": ["action"],
-        }
-    },
-    "inputs": ["observation.state", "observation.images.camera"],
-    "test_case": "case.safetensors",
-    "tolerance": 0.0,
+STATE = np.array([1, 2, 3], dtype=np.float32)
+TENSORS = {
+    "observation.state": ((3,), np.float32),
+    "observation.images.camera": ((4, 4, 3), np.uint8),
+    "hidden": ((3,), np.float32),
+    "x_t": ((2, 3), np.float32),
+    "timestep": ((1,), np.float32),
+    "x_next": ((2, 3), np.float32),
+    "action": ((2, 3), np.float32),
 }
-(folder / "export.json").write_text(json.dumps(info))
-(folder / "config.json").write_text(json.dumps({
-    "type": "act", "input_features": {
-        "observation.images.camera": {"type": "VISUAL", "shape": [3, 2, 2]}
-    }, "action_feature_names": ["joint.pos"],
-}))
-state = np.array([2.0], dtype=np.float32)
-image = np.full((2, 2, 3), 255, dtype=np.uint8)
-save_file({"observation.state": state, "observation.images.camera": image,
-           "expected_actions": np.array([[2.0], [4.0]], dtype=np.float32)},
-          folder / "case.safetensors")
+# The two denoising steps leave the noise behind: x = state + the last timestep.
+ACTIONS = np.stack([STATE + 0.5, 2 * (STATE + 0.5)])
 
 
-class Result:
-    # Stands in for ExecuTorch's own result: device memory with a host copy on request.
-    dtype_name = "float32"
-
-    def __init__(self, array):
-        self.array, self.shape = array, array.shape
-
-    @classmethod
-    def from_host(cls, array):
-        return cls(np.array(array))
-
-    def to_host(self):
-        return self.array
-
-    def __dlpack_device__(self):
-        return (2, 0)
+def run(name, values):
+    if name == "prefix":
+        if "observation.images.camera" in values:
+            image = values["observation.images.camera"]
+            assert image.shape == (4, 4, 3) and image.dtype == np.uint8, (image.shape, image.dtype)
+        return {"hidden": values["observation.state"].copy()}
+    if name == "step":
+        return {"x_next": values["x_t"] * 0 + values["hidden"] + values["timestep"]}
+    return {"action": values["x_t"] * np.array([[1], [2]], np.float32)}
 
 
-class Method:
-    def execute(self, inputs):
-        assert all(isinstance(value, Result) for value in inputs)
-        state, image = (value.array for value in inputs)
-        assert image.shape == (2, 2, 3) and image.dtype == np.uint8
-        return [Result(np.stack([state, 2 * state]))]
+def write_folder(folder, backend, camera):
+    frame = {"observation.state": STATE}
+    if camera:
+        frame["observation.images.camera"] = np.full((6, 8, 3), 255, dtype=np.uint8)
+    names = list(frame)
+    programs = {
+        "prefix": {"file": "prefix.bin", "inputs": names, "outputs": ["hidden"]},
+        "step": {"file": "step.bin", "inputs": ["hidden", "x_t", "timestep"], "outputs": ["x_next"]},
+        "actions": {"file": "actions.bin", "inputs": ["x_t"], "outputs": ["action"]},
+    }
+    info = {
+        "backend": backend,
+        "programs": programs,
+        "inputs": [*names, "noise"],
+        "noise_shape": [2, 3],
+        "steps": ["step"],
+        "timesteps": [1.0, 0.5],
+        "test_case": "case.safetensors",
+        "tolerance": 0.0,
+        "cuda_graphs": True,
+    }
+    if camera:
+        info["image_resize"] = {
+            "cameras": ["observation.images.camera"],
+            "target_size": None,
+            "resize_edge": None,
+            "crop_fraction": None,
+            "letterbox": False,
+            "image_size": [4, 4],
+        }
+    (folder / "export.json").write_text(json.dumps(info))
+    features = {"observation.state": {"type": "STATE", "shape": [3]}}
+    if camera:
+        features["observation.images.camera"] = {"type": "VISUAL", "shape": [3, 6, 8]}
+    (folder / "config.json").write_text(json.dumps({
+        "type": "act",
+        "input_features": features,
+        "output_features": {"action": {"type": "ACTION", "shape": [3]}},
+        "action_feature_names": ["motor_1.pos", "motor_2.pos", "motor_3.pos"],
+    }))
+    case = {**frame, "noise": np.zeros((2, 3), np.float32), "expected_actions": ACTIONS}
+    save_file(case, folder / "case.safetensors")
+    return frame
 
 
-runtime = SimpleNamespace(
-    load_program=lambda path: SimpleNamespace(load_method=lambda name: Method()),
-    backend_registry=SimpleNamespace(set_option=lambda backend, options: None),
-)
-sys.modules["executorch.runtime"] = SimpleNamespace(Runtime=SimpleNamespace(get=lambda: runtime), ExecuTorchResult=Result)
-sys.modules["torch_tensorrt_executorch_runtime"] = SimpleNamespace()
+def install_tensorrt():
+    # CUDA and TensorRT on the CPU: memory is host memory, and copies and engines run when queued.
+    from lerobot.inference.export import tensorrt
 
-@RobotConfig.register_subclass("test_export_robot")
-@dataclass
-class ExportRobotConfig(RobotConfig):
-    pass
+    memory = []
+    captures = []
 
-@parser.wrap()
-def parse_config(cfg: RolloutConfig):
-    return cfg
+    def malloc(size):
+        memory.append(ctypes.create_string_buffer(size))
+        return 0, ctypes.addressof(memory[-1])
 
-sys.argv = ["lerobot-rollout", f"--policy.path={folder}", "--robot.type=test_export_robot"]
-cfg = parse_config()
-assert cfg.policy.type == "act" and cfg.policy.action_feature_names == ["joint.pos"]
-engine = ExportInferenceEngine(folder, task="", robot_type="test_export_robot")
-frame = {"observation.state": state, "observation.images.camera": image}
-np.testing.assert_array_equal(engine.get_action(frame), [2.0])
-np.testing.assert_array_equal(engine.get_action(frame), [4.0])
-import os
-assert os.environ["EXECUTORCH_PYBINDINGS_TENSOR_OUTPUT"] == "executorch"
-assert "torch" not in sys.modules
-"""
-    result = subprocess.run(
-        [sys.executable, "-c", code, str(tmp_path)], capture_output=True, text=True, timeout=300
+    def memcpy(dst, src, size, kind, stream):
+        ctypes.memmove(dst, src, size)
+        return (0,)
+
+    def array(name, address):
+        shape, dtype = TENSORS[name]
+        size = int(np.prod(shape)) * np.dtype(dtype).itemsize
+        return np.frombuffer((ctypes.c_char * size).from_address(address), dtype).reshape(shape)
+
+    def launch(graph, stream):
+        for work in graph:
+            work()
+        return (0,)
+
+    class Context:
+        def __init__(self, name):
+            self.name, self.addresses = name, {}
+
+        def set_tensor_address(self, name, address):
+            self.addresses[name] = address
+            return True
+
+        def set_device_memory(self, address, size):
+            pass
+
+        def execute(self):
+            values = {name: array(name, address) for name, address in self.addresses.items()}
+            for name, value in run(self.name, values).items():
+                array(name, self.addresses[name])[:] = value
+
+        def execute_async_v3(self, stream):
+            if captures:
+                captures[-1].append(self.execute)
+            else:
+                self.execute()
+            return True
+
+    def load_engine(path):
+        return SimpleNamespace(
+            create_execution_context=lambda strategy: Context(path.stem),
+            get_tensor_shape=lambda name: TENSORS[name][0],
+            get_tensor_dtype=lambda name: TENSORS[name][1],
+            device_memory_size_v2=0,
+        )
+
+    cuda = SimpleNamespace(
+        cudaMalloc=malloc,
+        cudaFree=lambda address: (0,),
+        cudaMemcpyAsync=memcpy,
+        cudaMemcpyKind=SimpleNamespace(cudaMemcpyHostToDevice=1, cudaMemcpyDeviceToHost=2, cudaMemcpyDeviceToDevice=3),
+        cudaStreamCreate=lambda: (0, 1),
+        cudaStreamSynchronize=lambda stream: (0,),
+        cudaStreamDestroy=lambda stream: (0,),
+        cudaStreamCaptureMode=SimpleNamespace(cudaStreamCaptureModeGlobal=0),
+        cudaStreamBeginCapture=lambda stream, mode: captures.append([]) or (0,),
+        cudaStreamEndCapture=lambda stream: (0, captures.pop()),
+        cudaGraphInstantiate=lambda graph, flags: (0, graph),
+        cudaGraphDestroy=lambda graph: (0,),
+        cudaGraphLaunch=launch,
+        cudaGraphExecDestroy=lambda graph: (0,),
     )
-    assert result.returncode == 0, result.stderr
+    import sys
 
+    sys.modules["tensorrt"] = SimpleNamespace(
+        nptype=lambda dtype: dtype,
+        bfloat16="bfloat16",
+        ExecutionContextAllocationStrategy=SimpleNamespace(STATIC=0, USER_MANAGED=1),
+    )
+    tensorrt.cuda_runtime = lambda: cuda
+    tensorrt.load_engine = load_engine
+"""
 
-# A stand-in for ExecuTorch, imported from disk the way the real package is, that runs the program on
-# the CPU and records the output type the bindings would have chosen when they loaded.
+# ExecuTorch on the CPU. It records the output type the bindings would have chosen when they loaded, and
+# returns the actions in bfloat16, which NumPy can only read through ml_dtypes.
 FAKE_EXECUTORCH_RUNTIME = """
+import json
 import os
 
 import numpy as np
+from ml_dtypes import bfloat16
+
+from export_fakes import run
 
 OUTPUT_AT_IMPORT = os.environ.get("EXECUTORCH_PYBINDINGS_TENSOR_OUTPUT")
 
 
 class ExecuTorchResult:
-    dtype_name = "float32"
-
     def __init__(self, array):
         self.array, self.shape, self.strides = array, array.shape, array.strides
+        self.dtype_name = array.dtype.name
 
     @classmethod
     def from_host(cls, array, device_index=0):
         return cls(np.array(array))
 
     def to_host(self):
-        return np.array(self.array)
+        copy = np.array(self.array)
+        # The bindings export a bfloat16 result's raw bytes, since the buffer protocol has no bfloat16.
+        return copy.view(np.uint8) if self.dtype_name == "bfloat16" else copy
 
     def __dlpack_device__(self):
         return (2, 0)
 
 
 class Method:
+    def __init__(self, path):
+        self.name = path.stem
+        program = json.loads((path.parent / "export.json").read_text())["programs"][self.name]
+        self.inputs = program["inputs"]
+
     def execute(self, inputs):
         assert all(isinstance(value, ExecuTorchResult) for value in inputs), inputs
-        (state,) = (value.array for value in inputs)
-        return [ExecuTorchResult(np.stack([state, 2 * state]))]
+        outputs = run(self.name, {name: value.array for name, value in zip(self.inputs, inputs)})
+        if self.name == "actions":
+            outputs = {name: value.astype(bfloat16) for name, value in outputs.items()}
+        return [ExecuTorchResult(value) for value in outputs.values()]
 
 
 class Runtime:
@@ -242,92 +315,83 @@ class Runtime:
         return Runtime()
 
     def load_program(self, path):
-        return type("Program", (), {"load_method": lambda self, name: Method()})()
+        return type("Program", (), {"load_method": lambda self, name: Method(path)})()
 """
 
-# Runs `lerobot-rollout` itself on a mock robot, with a CPU stand-in for the compiled program.
+
+def write_fakes(tmp_path: Path) -> Path:
+    fake = tmp_path / "fake"
+    (fake / "executorch").mkdir(parents=True)
+    (fake / "executorch" / "__init__.py").write_text("")
+    (fake / "executorch" / "runtime.py").write_text(FAKE_EXECUTORCH_RUNTIME)
+    # Like the real package, the TensorRT backend loads ExecuTorch's bindings when it is imported.
+    (fake / "torch_tensorrt_executorch_runtime.py").write_text("import executorch.runtime\n")
+    (fake / "export_fakes.py").write_text(EXPORT_FAKES)
+    return fake
+
+
+def run_without_torch(code: str, tmp_path: Path, *args: str) -> subprocess.CompletedProcess:
+    env = {
+        **os.environ,
+        "PYTHONPATH": os.pathsep.join([str(write_fakes(tmp_path)), os.environ.get("PYTHONPATH", "")]),
+        # The engine needs ExecuTorch's own results, whatever the shell asks for.
+        "EXECUTORCH_PYBINDINGS_TENSOR_OUTPUT": "torch",
+    }
+    folder = tmp_path / "export"
+    folder.mkdir()
+    return subprocess.run(
+        [sys.executable, "-c", code, str(folder), *args], capture_output=True, text=True, timeout=300, env=env
+    )
+
+
+# Runs the export engine on a chain with noise, denoising steps and a resized camera.
+ENGINE_WITHOUT_TORCH = (
+    BLOCK_TORCH
+    + """
+from pathlib import Path
+
+import numpy as np
+
+import export_fakes
+
+folder, backend = Path(sys.argv[1]), sys.argv[2]
+frame = export_fakes.write_folder(folder, backend, camera=True)
+if backend == "onnx_trt":
+    export_fakes.install_tensorrt()
+
+from lerobot.inference.export import ExportInferenceEngine
+
+engine = ExportInferenceEngine(folder, task="", robot_type="")
+np.testing.assert_array_equal(engine.get_action(frame), export_fakes.ACTIONS[0])
+np.testing.assert_array_equal(engine.get_action(frame), export_fakes.ACTIONS[1])
+if attempts:
+    sys.exit(attempts[0])
+assert "torch" not in sys.modules
+"""
+)
+
+
+@pytest.mark.parametrize("backend", ["executorch_trt", "onnx_trt"])
+def test_export_engine_runs_a_denoising_chain_without_torch(tmp_path, backend):
+    """With torch installed but refusing to load, the engine runs a flow-matching chain with a camera."""
+    result = run_without_torch(ENGINE_WITHOUT_TORCH, tmp_path, backend)
+    assert result.returncode == 0, result.stderr[-4000:]
+
+
+# Runs `lerobot-rollout` itself on a mock robot, which has no camera.
 ROLLOUT_WITHOUT_TORCH = (
     BLOCK_TORCH
     + """
-import ctypes
-import json
 from pathlib import Path
 from types import SimpleNamespace
 
-import numpy as np
-from safetensors.numpy import save_file
+import export_fakes
 
 folder, backend, planner = Path(sys.argv[1]), sys.argv[2], sys.argv[4] == "planner"
 sys.path.insert(0, sys.argv[3])
-state = np.array([1, 2, 3], dtype=np.float32)
-save_file({"observation.state": state, "expected_actions": np.stack([state, 2 * state])}, folder / "case.safetensors")
-(folder / "export.json").write_text(json.dumps({
-    "backend": backend,
-    "programs": {"model": {"file": "model.bin", "inputs": ["observation.state"], "outputs": ["action"]}},
-    "inputs": ["observation.state"],
-    "test_case": "case.safetensors",
-    "tolerance": 0.0,
-}))
-(folder / "config.json").write_text(json.dumps({
-    "type": "act",
-    "input_features": {"observation.state": {"type": "STATE", "shape": [3]}},
-    "output_features": {"action": {"type": "ACTION", "shape": [3]}},
-    "action_feature_names": ["motor_1.pos", "motor_2.pos", "motor_3.pos"],
-}))
-
+export_fakes.write_folder(folder, backend, camera=False)
 if backend == "onnx_trt":
-    from lerobot.inference.export import tensorrt
-
-    memory = []
-
-    def malloc(size):
-        memory.append(ctypes.create_string_buffer(size))
-        return 0, ctypes.addressof(memory[-1])
-
-    def memcpy(dst, src, size, kind, stream):
-        ctypes.memmove(dst, src, size)
-        return (0,)
-
-    def floats(address, count):
-        return np.ctypeslib.as_array((ctypes.c_float * count).from_address(address))
-
-    class Context:
-        addresses = {}
-
-        def set_tensor_address(self, name, address):
-            self.addresses[name] = address
-            return True
-
-        def set_device_memory(self, address, size):
-            pass
-
-        def execute_async_v3(self, stream):
-            x = floats(self.addresses["observation.state"], 3)
-            floats(self.addresses["action"], 6)[:] = np.concatenate([x, 2 * x])
-            return True
-
-    cuda = SimpleNamespace(
-        cudaMalloc=malloc,
-        cudaFree=lambda address: (0,),
-        cudaMemcpyAsync=memcpy,
-        cudaMemcpyKind=SimpleNamespace(cudaMemcpyHostToDevice=1, cudaMemcpyDeviceToHost=2),
-        cudaStreamCreate=lambda: (0, 1),
-        cudaStreamSynchronize=lambda stream: (0,),
-        cudaStreamDestroy=lambda stream: (0,),
-    )
-    engine = SimpleNamespace(
-        create_execution_context=lambda strategy: Context(),
-        get_tensor_shape=lambda name: (3,) if name == "observation.state" else (2, 3),
-        get_tensor_dtype=lambda name: "float",
-        device_memory_size_v2=0,
-    )
-    sys.modules["tensorrt"] = SimpleNamespace(
-        nptype=lambda dtype: np.float32,
-        bfloat16="bfloat16",
-        ExecutionContextAllocationStrategy=SimpleNamespace(STATIC=0, USER_MANAGED=1),
-    )
-    tensorrt.cuda_runtime = lambda: cuda
-    tensorrt.load_engine = lambda path: engine
+    export_fakes.install_tensorrt()
 
 from tests.mocks.mock_robot import MockRobot
 
@@ -352,11 +416,9 @@ lerobot_rollout.main()
 if attempts:
     sys.exit(attempts[0])
 assert "torch" not in sys.modules
-# The first actions the robot gets are the chunk the program computed from its state, one per tick.
-assert sent[:2] == [
-    {"motor_1.pos": 1.0, "motor_2.pos": 2.0, "motor_3.pos": 3.0},
-    {"motor_1.pos": 2.0, "motor_2.pos": 4.0, "motor_3.pos": 6.0},
-], sent[:2]
+# The first actions the robot gets are the chunk the programs computed from its state, one per tick.
+names = ["motor_1.pos", "motor_2.pos", "motor_3.pos"]
+assert sent[:2] == [dict(zip(names, row.tolist())) for row in export_fakes.ACTIONS], sent[:2]
 if backend == "executorch_trt":
     import executorch.runtime
 
@@ -373,26 +435,6 @@ def test_rollout_runs_an_export_with_torch_unimportable(tmp_path, backend, plann
 
     With a planner, the rollout also looks for the vocabulary of the dataset the checkpoint was trained on.
     """
-    fake = tmp_path / "fake"
-    (fake / "executorch").mkdir(parents=True)
-    (fake / "executorch" / "__init__.py").write_text("")
-    (fake / "executorch" / "runtime.py").write_text(FAKE_EXECUTORCH_RUNTIME)
-    # Like the real package, the TensorRT backend loads ExecuTorch's bindings when it is imported.
-    (fake / "torch_tensorrt_executorch_runtime.py").write_text("import executorch.runtime\n")
-    folder = tmp_path / "export"
-    folder.mkdir()
     repo = Path(__file__).resolve().parents[1]
-    env = {
-        **os.environ,
-        "PYTHONPATH": os.pathsep.join([str(fake), os.environ.get("PYTHONPATH", "")]),
-        # The engine needs ExecuTorch's own results, whatever the shell asks for.
-        "EXECUTORCH_PYBINDINGS_TENSOR_OUTPUT": "torch",
-    }
-    result = subprocess.run(
-        [sys.executable, "-c", ROLLOUT_WITHOUT_TORCH, str(folder), backend, str(repo), planner],
-        capture_output=True,
-        text=True,
-        timeout=300,
-        env=env,
-    )
+    result = run_without_torch(ROLLOUT_WITHOUT_TORCH, tmp_path, backend, str(repo), planner)
     assert result.returncode == 0, result.stderr[-4000:]
