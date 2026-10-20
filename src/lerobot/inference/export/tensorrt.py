@@ -109,18 +109,8 @@ def runtime():
                 return 0
             return pointer
 
-        def allocate_async(self, size: int, alignment: int, flags: int, stream: int) -> int:
-            if cuda_runtime().cudaStreamSynchronize(stream)[0] != 0:
-                return 0
-            return self.allocate(size, alignment, flags)
-
         def deallocate(self, memory: int) -> bool:
             return cuda_runtime().cudaFree(memory)[0] == 0
-
-        def deallocate_async(self, memory: int, stream: int) -> bool:
-            if cuda_runtime().cudaStreamSynchronize(stream)[0] != 0:
-                return False
-            return self.deallocate(memory)
 
     result = trt.Runtime(trt.Logger(trt.Logger.WARNING))
     result.gpu_allocator = CudaAllocator()
@@ -164,7 +154,7 @@ def numpy_dtype(dtype):
 
 
 class TensorRTEngine:
-    """Run a fixed-shape engine; related engines can share a stream and scratch allocation.
+    """Run a fixed-shape engine on a stream and a scratch allocation that the engines of a chain share.
 
     `run_device` queues the work and returns without waiting for it, keeping the outputs in device buffers,
     which another engine on the same stream can read. Reading them on the host waits for the stream.
@@ -177,19 +167,17 @@ class TensorRTEngine:
         path: Path,
         input_names: list[str],
         output_names: list[str],
-        own_scratch: bool = True,
-        stream: CudaStream | None = None,
+        stream: CudaStream,
     ):
         import tensorrt as trt
 
         self._engine = load_engine(path)
-        strategy = trt.ExecutionContextAllocationStrategy
         self._context = self._engine.create_execution_context(
-            strategy.STATIC if own_scratch else strategy.USER_MANAGED
+            trt.ExecutionContextAllocationStrategy.USER_MANAGED
         )
         if self._context is None:
             raise RuntimeError(f"TensorRT could not create an execution context for {path}")
-        self._stream = stream if stream is not None else CudaStream()
+        self._stream = stream
         self._input_names = input_names
         self._input_shapes = [tuple(self._engine.get_tensor_shape(name)) for name in input_names]
         self._input_dtypes = [numpy_dtype(self._engine.get_tensor_dtype(name)) for name in input_names]
@@ -205,16 +193,13 @@ class TensorRTEngine:
         self._graph_inputs: tuple[int, ...] | None = None
 
     @property
-    def input_shape(self) -> tuple[int, ...]:
-        return self._input_shapes[0]
-
-    @property
     def scratch_bytes(self) -> int:
         return self._engine.device_memory_size_v2
 
     def use_scratch(self, scratch: CudaBuffer) -> None:
         if scratch.nbytes < self.scratch_bytes:
             raise ValueError("The scratch allocation is too small")
+        # The context only holds the address, so the engine keeps the allocation alive.
         self._scratch = scratch
         self._context.set_device_memory(scratch.ptr, self.scratch_bytes)
 
@@ -325,8 +310,7 @@ def load_engines(folder: Path, programs: dict[str, dict]) -> dict[str, TensorRTE
             folder / program["file"],
             program["inputs"],
             program["outputs"],
-            own_scratch=False,
-            stream=stream,
+            stream,
         )
         for name, program in programs.items()
     }
