@@ -67,6 +67,25 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# These pull in PyTorch, so they stay lazy to keep the export path torch-free. A module __getattr__ still
+# exposes them as attributes, so lerobot.rollout.context.<name> resolves for tests and introspection; the
+# import runs, and loads torch, only on first access. The functions that use them import them locally too,
+# and get the same objects, so patching one patches what they call.
+_LAZY = {
+    "RemoteClient": "lerobot.remote_inference",
+    "RemoteInferenceEngine": "lerobot.remote_inference",
+    "get_policy_class": "lerobot.policies",
+}
+
+
+def __getattr__(name: str) -> object:
+    module = _LAZY.get(name)
+    if module is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
+
+    return getattr(importlib.import_module(module), name)
+
 
 def _wrap_predict_action_chunk_with_torch_compile(
     policy: PreTrainedPolicy,
