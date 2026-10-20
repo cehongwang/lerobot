@@ -217,6 +217,12 @@ class ProcessorStepRegistry:
             # A saved pipeline records only the step name, so import the module that registers it.
             importlib.import_module(f"lerobot.{BUILTIN_STEP_MODULES[name]}")
         if name not in cls._registry:
+            # A policy's steps register when its package is imported, and a saved pipeline records only the
+            # step name, so import the built-in policies before giving up.
+            from lerobot.configs.policies import PreTrainedConfig
+
+            PreTrainedConfig.load_all_choices()
+        if name not in cls._registry:
             available = list(cls._registry.keys())
             raise KeyError(
                 f"Processor step '{name}' not found in registry. "
