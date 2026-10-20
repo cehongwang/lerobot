@@ -269,7 +269,7 @@ def test_smolvla_exports_for_the_robots_cameras_and_reproduces_its_test_case(rec
     engine = export_with_replay("smolvla", args, monkeypatch)
     info = __import__("json").loads((args.output_dir / "export.json").read_text())
     assert info["inputs"] == ["observation.images.front", "observation.state", "noise"]
-    assert info["task"] == "open the drawer" and info["task_fixed"] is True
+    assert info["task"] == "open the drawer"
     assert info["noise_shape"] == [4, 6]
     frame = {
         "observation.images.front": np.zeros((32, 32, 3), np.uint8),

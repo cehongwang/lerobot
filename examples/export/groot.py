@@ -603,7 +603,6 @@ class Export:
             steps=[name for name in programs if name.startswith("step_")],
             timesteps=self.timesteps,
             image_resize=self.image_resize,
-            task=self.task,
             # The task's token ids and rope positions are constants inside the programs.
-            task_fixed=True,
+            task=self.task,
         )

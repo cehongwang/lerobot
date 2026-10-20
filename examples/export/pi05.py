@@ -16,8 +16,9 @@
 
 The chunk goes from the robot's raw uint8 HWC cameras, float32 state and noise to actions in robot units.
 pi0.5 reads the state as bin numbers in its prompt, so the program digitizes it and builds the prompt from
-token pieces made at export time; no tokenizer runs at inference. The program keeps only the vocabulary
-rows the task's prompt can hold (about 1 GiB less), which ties the folder to that task.
+token pieces made at export time; no tokenizer runs at inference. The task's tokens are constants, and the
+program keeps only the vocabulary rows the prompt can hold (about 1 GiB less), so the folder runs only that
+task.
 
 The chain is the embeddings, the language model in groups of three layers, one denoising step, and the
 actions. Each part is built in its own process with only its own weights in memory, so an 8 GB board can
@@ -354,7 +355,6 @@ class Export:
             programs,
             steps=["step"],
             timesteps=self.timesteps,
+            # The program holds the task's prompt tokens, so the folder runs only this task.
             task=args.task,
-            # The program keeps only the vocabulary rows this task's prompt can hold.
-            task_fixed=True,
         )

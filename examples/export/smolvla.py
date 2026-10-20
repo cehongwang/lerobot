@@ -127,7 +127,6 @@ class Export:
             self.noise,
             self.expected_actions,
             programs,
+            # The program holds the task's token ids, so the folder runs only this task.
             task=self.task,
-            # The program holds the task's token ids.
-            task_fixed=True,
         )

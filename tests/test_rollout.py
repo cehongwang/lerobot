@@ -1996,7 +1996,7 @@ def test_export_engine_refuses_another_task_before_loading_the_programs(tmp_path
 
     _write_export_folder(tmp_path, [[0, 1, 2], [0, 2, 4]])
     info = json.loads((tmp_path / "export.json").read_text())
-    (tmp_path / "export.json").write_text(json.dumps({**info, "task": "pick", "task_fixed": True}))
+    (tmp_path / "export.json").write_text(json.dumps({**info, "task": "pick"}))
     monkeypatch.setattr(export_engine, "load_programs", lambda *args: pytest.fail("loaded the programs"))
     with pytest.raises(ValueError, match="only runs the task it was exported for"):
         export_engine.ExportInferenceEngine(tmp_path, task="place")
@@ -2009,7 +2009,7 @@ def test_export_engine_refuses_another_task_than_a_fixed_task_export(tmp_path, c
 
     _write_export_folder(tmp_path, [[0, 1, 2], [0, 2, 4]])
     info = json.loads((tmp_path / "export.json").read_text())
-    (tmp_path / "export.json").write_text(json.dumps({**info, "task": "pick", "task_fixed": True}))
+    (tmp_path / "export.json").write_text(json.dumps({**info, "task": "pick"}))
 
     with pytest.raises(ValueError, match="only runs the task it was exported for"):
         cpu_export_engine(tmp_path)

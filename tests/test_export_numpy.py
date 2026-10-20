@@ -284,7 +284,6 @@ def test_engine_feeds_the_raw_frame_and_fresh_noise_and_plays_the_chunk(tmp_path
         inputs=[*names, "noise"],
         noise_shape=[4, 3],
         task="pick",
-        task_fixed=True,
         test_case="case.safetensors",
         tolerance=0.0,
     )

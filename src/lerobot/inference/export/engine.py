@@ -17,8 +17,8 @@
 An exported folder holds the compiled programs, the policy's `config.json`, and an `export.json` that
 lists the programs with their inputs and outputs, and a test case. A whole policy is one program; a
 policy too large to compile at once is a chain. The engine feeds the chain the robot's frame (and, for a
-flow-matching policy, fresh noise each chunk) and returns actions in robot units. A folder compiled for
-one task (`task_fixed`) refuses any other task.
+flow-matching policy, fresh noise each chunk) and returns actions in robot units. A folder that names a
+`task` was compiled for it and refuses any other.
 """
 
 from __future__ import annotations
@@ -135,7 +135,7 @@ class ExportInferenceEngine(InferenceEngine):
     def __init__(self, folder: Path, task: str, rename_map: dict[str, str] | None = None) -> None:
         super().__init__(task=task)
         info = json.loads((folder / EXPORT_INFO).read_text())
-        self._fixed_task: str | None = info["task"] if info.get("task_fixed") else None
+        self._fixed_task: str | None = info.get("task")
         self._check_task(task)
         self._frame_names = [name for name in info["inputs"] if name != NOISE]
         self._noise_shape = tuple(info["noise_shape"]) if "noise_shape" in info else None
