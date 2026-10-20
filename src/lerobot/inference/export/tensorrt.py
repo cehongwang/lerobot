@@ -229,13 +229,13 @@ class TensorRTEngine:
         addresses = []
         try:
             for name, dtype, value in zip(self._input_names, self._input_dtypes, inputs, strict=True):
-                if isinstance(value, CudaBuffer) and value not in self._outputs:
-                    if value.dtype != dtype:
-                        raise ValueError(f"{name} has dtype {value.dtype}; the engine expects {dtype}")
-                    buffer = value
-                elif isinstance(value, CudaBuffer):
-                    # The engine's own output fed back in, as the next noisy actions of a denoising step:
-                    # copy it to the input buffer, so the engine never reads and writes one buffer at once.
+                if isinstance(value, CudaBuffer) and value.dtype != dtype:
+                    raise ValueError(f"{name} has dtype {value.dtype}; the engine expects {dtype}")
+                if isinstance(value, CudaBuffer) and (
+                    value in self._outputs or (self._cuda_graphs and name in self._inputs)
+                ):
+                    # Copied into the engine's own input buffer: the engine must not read the output it writes,
+                    # and a value that replaces an earlier host array must sit where the CUDA graph reads it.
                     buffer = self._input_buffer(name, value.shape, dtype)
                     check_cuda(
                         cuda.cudaMemcpyAsync(
@@ -246,6 +246,8 @@ class TensorRTEngine:
                             self._stream.handle,
                         )
                     )
+                elif isinstance(value, CudaBuffer):
+                    buffer = value
                 else:
                     value = np.ascontiguousarray(value, dtype=dtype)
                     host_inputs.append(value)

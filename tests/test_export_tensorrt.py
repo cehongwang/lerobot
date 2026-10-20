@@ -59,6 +59,23 @@ def fake_cuda(monkeypatch):
             queue.pop(0)()
         return (0,)
 
+    # A recorded graph is the work queued during the capture, replayed with the addresses it was queued with.
+    captures = {}
+
+    def begin_capture(stream, mode):
+        captures[stream] = len(queues[stream])
+        return (0,)
+
+    def end_capture(stream):
+        start = captures.pop(stream)
+        graph = queues[stream][start:]
+        del queues[stream][start:]
+        return 0, graph
+
+    def launch(graph, stream):
+        queues[stream].extend(graph)
+        return (0,)
+
     cuda = SimpleNamespace(
         cudaMalloc=malloc,
         cudaFree=free,
@@ -71,6 +88,13 @@ def fake_cuda(monkeypatch):
         cudaStreamCreate=lambda: (0, next(handles)),
         cudaStreamSynchronize=synchronize,
         cudaStreamDestroy=lambda stream: (0,),
+        cudaStreamCaptureMode=SimpleNamespace(cudaStreamCaptureModeGlobal=0),
+        cudaStreamBeginCapture=begin_capture,
+        cudaStreamEndCapture=end_capture,
+        cudaGraphInstantiate=lambda graph, flags: (0, graph),
+        cudaGraphDestroy=lambda graph: (0,),
+        cudaGraphLaunch=launch,
+        cudaGraphExecDestroy=MagicMock(return_value=(0,)),
         allocations=allocations,
         queues=queues,
         copies=copies,
@@ -107,7 +131,9 @@ def fake_engine(monkeypatch, fake_cuda):
             # TensorRT reads the bound addresses when the work is queued, not when it runs.
             addresses = dict(self.addresses)
             source = addresses["x"] if "x" in addresses else addresses["x_t"]
-            target = next(addresses[name] for name in ("y", "x_next", "action") if name in addresses)
+            target = next(
+                addresses[name] for name in ("y", "x_next", "action", "hidden") if name in addresses
+            )
 
             def execute():
                 floats(target, (1, 3))[:] = 2 * floats(source, (1, 3))
@@ -240,6 +266,25 @@ def test_engine_refuses_a_gpu_input_of_another_dtype(tmp_path, fake_cuda, fake_e
         engine["model"].run_device(backend.CudaBuffer((1, 3), np.float16))
 
 
+def test_engine_refuses_its_own_output_of_another_dtype(tmp_path, fake_cuda, fake_engine, monkeypatch):
+    """Copying a float16 output into a float32 input would read past the end of the output."""
+    load_engine = backend.load_engine
+
+    def half_output(path):
+        engine = load_engine(path)
+        engine.get_tensor_dtype = lambda name: "half" if name == "x_next" else "float"
+        return engine
+
+    monkeypatch.setattr(backend, "load_engine", half_output)
+    monkeypatch.setattr(
+        sys.modules["tensorrt"], "nptype", lambda dtype: np.float16 if dtype == "half" else np.float32
+    )
+    engine = backend.TensorRTEngine(tmp_path / "step.engine", ["x_t"], ["x_next"])
+    (x_next,) = engine.run_device(np.ones((1, 3), np.float32))
+    with pytest.raises(ValueError, match="the engine expects float32"):
+        engine.run_device(x_next)
+
+
 def test_engine_synchronizes_copies_after_execution_failure(tmp_path, fake_cuda, fake_engine):
     engine = backend.TensorRTEngine(tmp_path / "model.engine", ["x"], ["y"])
     fake_engine[0].execute_async_v3 = lambda stream: False
@@ -248,37 +293,52 @@ def test_engine_synchronizes_copies_after_execution_failure(tmp_path, fake_cuda,
     assert not any(fake_cuda.queues.values())
 
 
-def test_engine_records_one_cuda_graph_and_replays_it(tmp_path, fake_cuda, fake_engine):
-    graphs = []
+def test_engine_records_one_cuda_graph_and_replays_it(tmp_path, fake_cuda, fake_engine, monkeypatch):
     queued_before_capture = []
-
-    def end_capture(stream):
-        graphs.append(fake_cuda.queues[stream].pop())
-        return 0, "graph"
-
-    def launch(graph, stream):
-        fake_cuda.queues[stream].append(graphs[0])
-        return (0,)
-
-    fake_cuda.cudaStreamCaptureMode = SimpleNamespace(cudaStreamCaptureModeGlobal=0)
-    fake_cuda.cudaStreamBeginCapture = lambda stream, mode: queued_before_capture.append(
-        fake_engine[0].enqueued
-    ) or (0,)
-    fake_cuda.cudaStreamEndCapture = end_capture
-    fake_cuda.cudaGraphInstantiate = lambda graph, flags: (0, "instance")
-    fake_cuda.cudaGraphDestroy = lambda graph: (0,)
-    fake_cuda.cudaGraphLaunch = launch
-    fake_cuda.cudaGraphExecDestroy = MagicMock(return_value=(0,))
+    begin_capture = fake_cuda.cudaStreamBeginCapture
+    monkeypatch.setattr(
+        fake_cuda,
+        "cudaStreamBeginCapture",
+        lambda stream, mode: queued_before_capture.append(fake_engine[0].enqueued)
+        or begin_capture(stream, mode),
+    )
     engine = backend.TensorRTEngine(tmp_path / "model.engine", ["x"], ["y"], cuda_graphs=True)
     np.testing.assert_array_equal(engine(np.ones((1, 3))), [[2, 2, 2]])
     np.testing.assert_array_equal(engine(np.full((1, 3), 3.0)), [[6, 6, 6]])
-    assert len(graphs) == 1
-    # TensorRT updates its state on the first run, so the graph records the second.
+    # TensorRT updates its state on the first run, so the graph records the second; later runs replay it.
     assert queued_before_capture == [1]
+    assert fake_engine[0].enqueued == 2
+    del engine
+    fake_cuda.cudaGraphExecDestroy.assert_called_once()
+
+
+def test_engine_graph_refuses_an_input_buffer_it_did_not_record(tmp_path, fake_cuda, fake_engine):
+    engine = backend.TensorRTEngine(tmp_path / "model.engine", ["x"], ["y"], cuda_graphs=True)
+    engine.run_device(backend.CudaBuffer((1, 3), np.float32))
     with pytest.raises(ValueError, match="same ones every run"):
         engine.run_device(backend.CudaBuffer((1, 3), np.float32))
-    del engine
-    fake_cuda.cudaGraphExecDestroy.assert_called_once_with("instance")
+
+
+def test_a_split_denoising_step_runs_with_cuda_graphs(tmp_path, fake_cuda, fake_engine):
+    """GR00T's shape: the step is two engines, so the first reads x_t from the noise, then from the last."""
+    from lerobot.inference.export.engine import ProgramChain
+
+    programs = {
+        "step_0": {"file": "step_0.engine", "inputs": ["x_t", "timestep"], "outputs": ["hidden"]},
+        "step_1": {"file": "step_1.engine", "inputs": ["hidden", "x_t"], "outputs": ["x_next"]},
+        "actions": {"file": "actions.engine", "inputs": ["x_t"], "outputs": ["action"]},
+    }
+    engines = backend.load_engines(tmp_path, programs, cuda_graphs=True)
+    info = {
+        "inputs": ["noise"],
+        "programs": programs,
+        "steps": ["step_0", "step_1"],
+        "timesteps": [1.0, 0.5, 0.25],
+    }
+    chain = ProgramChain(engines, info)
+    noise = np.arange(3, dtype=np.float32).reshape(1, 3)
+    for _ in range(2):
+        np.testing.assert_array_equal(chain(noise), 16 * noise)
 
 
 def test_allocator_uses_plain_malloc_and_handles_failure(monkeypatch):
