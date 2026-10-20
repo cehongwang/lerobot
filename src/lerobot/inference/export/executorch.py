@@ -38,7 +38,7 @@ class ExecuTorchProgram:
     Calling the program takes and returns host arrays.
     """
 
-    def __init__(self, path: Path, shared_scratch: bool = False):
+    def __init__(self, path: Path):
         try:
             import torch_tensorrt_executorch_runtime  # noqa: F401  # registers the TensorRT backend
 
@@ -52,9 +52,7 @@ class ExecuTorchProgram:
 
         runtime = Runtime.get()
         # The programs of a chain run one after another, so they can share one activation scratch.
-        runtime.backend_registry.set_option(
-            "TensorRTBackend", {"use_shared_activation_scratch": shared_scratch}
-        )
+        runtime.backend_registry.set_option("TensorRTBackend", {"use_shared_activation_scratch": True})
         self._method = runtime.load_program(path).load_method("forward")
 
     def run_device(self, *inputs: np.ndarray | Any) -> tuple[Any, ...]:

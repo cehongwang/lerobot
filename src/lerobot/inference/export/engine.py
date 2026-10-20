@@ -72,10 +72,7 @@ def load_programs(folder: Path, info: dict) -> Mapping[str, Program]:
     if backend == "executorch_trt":
         from .executorch import ExecuTorchProgram
 
-        # The programs run one after another, so they can share one activation scratch.
-        return {
-            name: ExecuTorchProgram(folder / p["file"], shared_scratch=True) for name, p in programs.items()
-        }
+        return {name: ExecuTorchProgram(folder / p["file"]) for name, p in programs.items()}
     if backend == "torch_trt":
         from .aoti import AOTInductorPackage
 
