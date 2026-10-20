@@ -64,11 +64,15 @@ class ExecuTorchProgram:
 
 
 def to_host(result: Any) -> np.ndarray:
-    """A host copy of a program's result. NumPy has no bfloat16, so ml_dtypes reads its raw bytes."""
+    """A host copy of a program's result, in the result's own layout.
+
+    NumPy has no bfloat16, so the bindings export a bfloat16 result's raw bytes in storage order, and
+    ml_dtypes reads them with the result's strides.
+    """
     host = np.asarray(result.to_host())
     if result.dtype_name == "bfloat16":
         require_package("ml-dtypes", extra="export", import_name="ml_dtypes")
         from ml_dtypes import bfloat16
 
-        return host.view(np.uint16).view(bfloat16).reshape(result.shape)
+        return np.lib.stride_tricks.as_strided(host.view(bfloat16), result.shape, result.strides)
     return host.copy()

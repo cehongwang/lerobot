@@ -153,15 +153,42 @@ def test_executorch_programs_of_a_chain_share_one_activation_scratch(tmp_path, e
     assert executorch.options == [("TensorRTBackend", {"use_shared_activation_scratch": True})]
 
 
-def test_executorch_reads_bfloat16_results_through_ml_dtypes(tmp_path, monkeypatch):
-    ml_dtypes = pytest.importorskip("ml_dtypes")
+class HostResult:
+    """Stands in for a CPU result of ExecuTorch's bindings, read through the buffer protocol.
+
+    The protocol exports it in its own layout, except bfloat16, which the protocol cannot describe, so
+    that is exported as raw bytes in storage order.
+    """
+
+    def __init__(self, storage, view):
+        self._storage, self._view = storage, view
+
+    def __buffer__(self, flags):
+        if self._view.dtype.name == "bfloat16":
+            return memoryview(self._storage.reshape(-1).view(np.uint8))
+        return memoryview(self._view)
+
+
+@pytest.mark.parametrize("dtype", ["float32", "bfloat16"])
+@pytest.mark.parametrize("channels_last", [False, True])
+def test_executorch_reads_results_in_their_own_layout(dtype, channels_last):
     from lerobot.inference.export.executorch import to_host
 
-    raw = np.array([[1.25, -2.5]], dtype=ml_dtypes.bfloat16).view(np.uint16)
-    result = SimpleNamespace(to_host=lambda: raw.view(np.uint8), dtype_name="bfloat16", shape=(1, 2))
+    if dtype == "bfloat16":
+        dtype = pytest.importorskip("ml_dtypes").bfloat16
+    expected = np.arange(12, dtype=np.float32).reshape(1, 3, 2, 2).astype(dtype)
+    # A channels-last result stores each pixel's channels together and keeps the logical shape.
+    storage = expected.transpose(0, 2, 3, 1).copy() if channels_last else expected.copy()
+    view = storage.transpose(0, 3, 1, 2) if channels_last else storage
+    result = SimpleNamespace(
+        to_host=lambda: HostResult(storage, view),
+        dtype_name=np.dtype(dtype).name,
+        shape=view.shape,
+        strides=view.strides,
+    )
     host = to_host(result)
-    assert host.dtype == np.dtype(ml_dtypes.bfloat16)
-    np.testing.assert_array_equal(host.astype(np.float32), [[1.25, -2.5]])
+    assert host.dtype == np.dtype(dtype)
+    np.testing.assert_array_equal(host.astype(np.float32), expected.astype(np.float32))
 
 
 def test_executorch_host_copies_survive_the_next_run(tmp_path, executorch):
