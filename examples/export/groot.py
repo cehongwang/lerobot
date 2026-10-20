@@ -408,10 +408,12 @@ class GrootStep(nn.Module):
 def check_traceable_decode(postprocessor: PolicyProcessorPipeline, route: str) -> None:
     """Refuse at the start a checkpoint whose action decoding this route cannot compile.
 
-    GR00T N1.7 checkpoints with statistics for their embodiment decode actions in NumPy. torch.export
-    cannot trace that, so the export would otherwise fail at its last part after hours. The ONNX
-    exporter traces it into the program, except relative actions, which add a state the decoder
-    caches between calls.
+    GR00T N1.7 checkpoints with statistics for their embodiment decode actions in NumPy. The other routes
+    trace with torch.export's default non-strict mode, which cannot run NumPy on traced tensors, so the
+    export would otherwise fail at its last part after hours. The ONNX exporter traces it into the program,
+    except relative actions, which add a state the decoder caches between calls. It is the only recipe check
+    that names a route, because the route decides how a program is traced. torch.export's strict mode also
+    traces the decoding, but a TensorRT build of that graph is untested, so the routes keep their default.
     """
     decode = next((s for s in postprocessor.steps if isinstance(s, GrootN17ActionDecodeStep)), None)
     if decode is None:
