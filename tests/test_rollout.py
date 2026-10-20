@@ -1852,7 +1852,8 @@ def test_export_engine_refuses_nan_actions_and_a_wrong_shape(tmp_path, monkeypat
         return np.full_like(chunk, np.nan) if bad == "nan" else np.concatenate([chunk, chunk[:, :1]], axis=1)
 
     monkeypatch.setattr(export_engine, "load_programs", lambda folder, info: {"model": program})
-    with pytest.raises(RuntimeError, match="does not reproduce its test case"):
+    message = "does not reproduce its test case" if bad == "nan" else r"shaped \(2, 4\), but its test case"
+    with pytest.raises(RuntimeError, match=message):
         export_engine.ExportInferenceEngine(tmp_path, task="")
 
 

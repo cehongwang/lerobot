@@ -176,8 +176,14 @@ class ExportInferenceEngine(InferenceEngine):
         case = load_file(path)
         expected = case.pop("expected_actions")
         actual = self._run_chunk(case, case.pop(NOISE, None))
-        error = float(np.abs(actual - expected).max()) if actual.shape == expected.shape else np.inf
+        if actual.shape != expected.shape:
+            raise RuntimeError(
+                f"The exported policy returns actions shaped {actual.shape}, but its test case expects "
+                f"{expected.shape}. Export it again."
+            )
+        error = float(np.abs(actual - expected).max())
         logger.info("Exported policy test case: largest difference %.2e (tolerance %g)", error, tolerance)
+        # Written as `not <=` so that a NaN error is refused too.
         if not error <= tolerance:
             raise RuntimeError(
                 f"The exported policy does not reproduce its test case ({error:.2e} > {tolerance}). "
