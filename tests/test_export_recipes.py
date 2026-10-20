@@ -29,6 +29,7 @@ import torch
 
 from lerobot.configs.types import FeatureType, PolicyFeature
 from lerobot.inference.export import ExportInferenceEngine, engine as export_engine
+from tests.utils import require_hf_token
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples" / "export"
 
@@ -161,7 +162,10 @@ def tiny_smolvlm(path):
 
     from huggingface_hub import snapshot_download
 
-    source = Path(snapshot_download("HuggingFaceTB/SmolVLM2-500M-Video-Instruct", local_files_only=True))
+    # SmolVLM2 is public; only its config, tokenizer and processor files are needed, not its weights.
+    source = Path(
+        snapshot_download("HuggingFaceTB/SmolVLM2-500M-Video-Instruct", allow_patterns=["*.json", "*.txt"])
+    )
     path.mkdir()
     for file in source.iterdir():
         if file.is_file() and file.suffix in (".json", ".txt"):
@@ -236,10 +240,7 @@ def smolvla_checkpoint(path, vlm):
 
 def test_smolvla_exports_for_the_robots_cameras_and_reproduces_its_test_case(recipes, tmp_path, monkeypatch):
     pytest.importorskip("transformers")
-    try:
-        vlm = tiny_smolvlm(tmp_path / "vlm")
-    except Exception as error:  # noqa: BLE001
-        pytest.skip(f"SmolVLM2's tokenizer and processor are not cached: {error}")
+    vlm = tiny_smolvlm(tmp_path / "vlm")
     checkpoint = smolvla_checkpoint(tmp_path / "checkpoint", vlm)
     features = {
         # The robot names its camera differently from the checkpoint's placeholder, and stores it channel first.
@@ -329,15 +330,10 @@ def pi05_checkpoint(path, monkeypatch):
     return path, config
 
 
+@require_hf_token
 def test_pi05_chain_reproduces_the_policy(recipes, tmp_path, monkeypatch):
     """The chained parts compute what `PI05Policy.predict_action_chunk` computes, from the same frame and noise."""
     pytest.importorskip("transformers")
-    from transformers import AutoTokenizer
-
-    try:
-        AutoTokenizer.from_pretrained("google/paligemma-3b-pt-224", local_files_only=True)
-    except Exception as error:  # noqa: BLE001
-        pytest.skip(f"The PaliGemma tokenizer is gated and not cached here: {error}")
     from lerobot.policies.factory import make_pre_post_processors
     from lerobot.policies.pi05 import PI05Policy
     from lerobot.policies.utils import prepare_observation_for_inference
@@ -373,15 +369,10 @@ def test_pi05_chain_reproduces_the_policy(recipes, tmp_path, monkeypatch):
     assert engine.get_action(frame).shape == (3,)
 
 
+@require_hf_token
 def test_pi05_prompt_matches_the_policy_prompt_on_bin_edges(recipes):
     """The program's prompt equals pi0.5's own prompt step, for states on the bin edges and between them."""
     pytest.importorskip("transformers")
-    from transformers import AutoTokenizer
-
-    try:
-        AutoTokenizer.from_pretrained("google/paligemma-3b-pt-224", local_files_only=True)
-    except Exception as error:  # noqa: BLE001
-        pytest.skip(f"The PaliGemma tokenizer is gated and not cached here: {error}")
     from lerobot.policies.pi05.processor_pi05 import Pi05PrepareStateTokenizerProcessorStep
     from lerobot.processor import TokenizerProcessorStep, TransitionKey
 
