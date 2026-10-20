@@ -135,9 +135,7 @@ class ExportInferenceEngine(InferenceEngine):
     PyTorch.
     """
 
-    def __init__(
-        self, folder: Path, task: str, robot_type: str, rename_map: dict[str, str] | None = None
-    ) -> None:
+    def __init__(self, folder: Path, task: str, rename_map: dict[str, str] | None = None) -> None:
         super().__init__(task=task)
         info = json.loads((folder / EXPORT_INFO).read_text())
         self._frame_names = [name for name in info["inputs"] if name != NOISE]

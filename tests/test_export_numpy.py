@@ -302,7 +302,7 @@ def test_engine_feeds_the_raw_frame_and_fresh_noise_and_plays_the_chunk(tmp_path
         return expected
 
     monkeypatch.setattr(export_engine, "load_programs", lambda *args: {"model": program})
-    engine = ExportInferenceEngine(tmp_path, "pick", "replay", {"camera": "observation.images.camera"})
+    engine = ExportInferenceEngine(tmp_path, "pick", {"camera": "observation.images.camera"})
     np.testing.assert_array_equal(calls[0], noise)
     live = {
         "observation.state": state,

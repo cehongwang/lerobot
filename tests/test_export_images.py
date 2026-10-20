@@ -133,7 +133,7 @@ def test_runtime_resizes_both_startup_and_live_frames(tmp_path, monkeypatch):
         return expected
 
     monkeypatch.setattr(module, "load_programs", lambda *args: {"model": program})
-    engine = module.ExportInferenceEngine(tmp_path, "pick", "replay")
+    engine = module.ExportInferenceEngine(tmp_path, "pick")
     np.testing.assert_array_equal(engine.get_action(frame), state)
     assert len(calls) == 2
     assert frame["observation.images.camera"] is image

@@ -1803,7 +1803,7 @@ def cpu_export_engine(monkeypatch):
     from lerobot.inference.export import engine as export_engine
 
     monkeypatch.setattr(export_engine, "load_programs", lambda folder, info: {"model": _fake_program})
-    return lambda folder: export_engine.ExportInferenceEngine(folder, task="", robot_type="")
+    return lambda folder: export_engine.ExportInferenceEngine(folder, task="")
 
 
 def test_export_dir_tells_an_exported_folder_from_a_checkpoint(tmp_path):
@@ -1853,7 +1853,7 @@ def test_export_engine_refuses_nan_actions_and_a_wrong_shape(tmp_path, monkeypat
 
     monkeypatch.setattr(export_engine, "load_programs", lambda folder, info: {"model": program})
     with pytest.raises(RuntimeError, match="does not reproduce its test case"):
-        export_engine.ExportInferenceEngine(tmp_path, task="", robot_type="")
+        export_engine.ExportInferenceEngine(tmp_path, task="")
 
 
 @pytest.mark.parametrize("event", ["task", "reset"])
@@ -1881,7 +1881,7 @@ def test_export_engine_applies_the_rename_map_to_the_robot_frame(tmp_path, monke
     _write_export_folder(tmp_path, [[0, 1, 2], [0, 2, 4]])
     monkeypatch.setattr(export_engine, "load_programs", lambda folder, info: {"model": _fake_program})
     engine = export_engine.ExportInferenceEngine(
-        tmp_path, task="", robot_type="", rename_map={"observation.joints": "observation.state"}
+        tmp_path, task="", rename_map={"observation.joints": "observation.state"}
     )
 
     action = engine.get_action({"observation.joints": np.array([1, 2, 3], dtype=np.float32)})
@@ -1905,12 +1905,14 @@ def test_rollout_checks_an_export_before_connecting_the_robot(tmp_path, monkeypa
     def failing_engine(*args, **kwargs):
         raise RuntimeError("does not reproduce its test case")
 
-    monkeypatch.setattr(rollout_context, "make_robot_from_config", lambda _: robot)
+    built = []
+    monkeypatch.setattr(rollout_context, "make_robot_from_config", lambda _: built.append(robot) or robot)
     monkeypatch.setattr(rollout_context, "ExportInferenceEngine", failing_engine)
 
     with pytest.raises(RuntimeError, match="test case"):
         rollout_context.build_rollout_context(cfg, threading.Event())
-    assert not robot.is_connected
+    # The engine needs nothing from the robot, so a failing export never even builds one.
+    assert not built
 
 
 def test_tensorrt_engine_refuses_an_input_of_another_shape(tmp_path, monkeypatch):
@@ -1977,7 +1979,7 @@ def test_export_engine_refuses_another_task_than_a_fixed_task_export(tmp_path, c
 
     from lerobot.inference.export import engine as export_engine
 
-    engine = export_engine.ExportInferenceEngine(tmp_path, task="pick", robot_type="")
+    engine = export_engine.ExportInferenceEngine(tmp_path, task="pick")
     frame = {"observation.state": np.array([1, 2, 3], dtype=np.float32)}
     np.testing.assert_array_equal(engine.get_action(frame), [1, 2, 3])
     assert "only runs the task it was exported for" in engine.text_input_error("place", instruction=True)

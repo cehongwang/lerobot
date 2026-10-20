@@ -361,7 +361,7 @@ if backend == "onnx_trt":
 
 from lerobot.inference.export import ExportInferenceEngine
 
-engine = ExportInferenceEngine(folder, task="", robot_type="")
+engine = ExportInferenceEngine(folder, task="")
 np.testing.assert_array_equal(engine.get_action(frame), export_fakes.ACTIONS[0])
 np.testing.assert_array_equal(engine.get_action(frame), export_fakes.ACTIONS[1])
 if attempts:

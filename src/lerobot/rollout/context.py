@@ -492,16 +492,9 @@ def build_rollout_context(
     torch_compile_active = False
     task_str = cfg.dataset.single_task if cfg.dataset else cfg.task
     if policy_export_dir is not None:
-        if cfg.robot is None:
-            raise ValueError("--robot.type is required for rollout")
         # Before connecting, so an export that fails its test case never touches the robot.
         logger.info("Creating inference engine (type=export)...")
-        export_engine = ExportInferenceEngine(
-            policy_export_dir,
-            task=task_str,
-            robot_type=make_robot_from_config(cfg.robot).robot_type,
-            rename_map=cfg.rename_map,
-        )
+        export_engine = ExportInferenceEngine(policy_export_dir, task=task_str, rename_map=cfg.rename_map)
     else:
         from lerobot.inference import supports_rtc_inference, validate_local_chunk_policy
 

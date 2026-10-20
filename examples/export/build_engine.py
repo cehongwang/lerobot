@@ -80,7 +80,7 @@ def main() -> None:
             TENSORRT_OPTIONS["optimization_level"],
         )
     # The rollout's own startup check: the engines must reproduce the test case.
-    ExportInferenceEngine(args.folder, task=info.get("task", ""), robot_type="")
+    ExportInferenceEngine(args.folder, task=info.get("task", ""))
     print(f"{args.folder} reproduces its test case")
 
 

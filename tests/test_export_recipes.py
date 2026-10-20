@@ -79,7 +79,7 @@ def export_with_replay(recipe_name, args, monkeypatch):
         "load_programs",
         lambda folder, info: {name: compiled[p["file"]] for name, p in info["programs"].items()},
     )
-    return ExportInferenceEngine(args.output_dir, task=getattr(args, "task", None) or "", robot_type="")
+    return ExportInferenceEngine(args.output_dir, task=getattr(args, "task", None) or "")
 
 
 def act_checkpoint(path):
