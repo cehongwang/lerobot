@@ -165,9 +165,32 @@ def test_export_refuses_a_part_the_recipe_does_not_build(tmp_path, monkeypatch):
 
 
 def test_route_scripts_name_no_policy():
+    """A route compiles any recipe's parts the same way, so its code names no policy; its docstring may."""
+    import ast
+    import re
+
+    policies = {"act", "smolvla", "pi0", "pi05", "groot", "gr00t"}
     for name in ("executorch_trt", "onnx_trt", "torch_trt"):
-        code = (EXAMPLES / f"{name}.py").read_text().split('"""', 2)[2]
-        assert not any(policy in code for policy in ("act", "smolvla", "pi05", "groot")), name
+        module = ast.parse((EXAMPLES / f"{name}.py").read_text())
+        names = []
+        for node in ast.walk(ast.Module(body=module.body[1:], type_ignores=[])):
+            if isinstance(node, ast.Name):
+                names.append(node.id)
+            elif isinstance(node, ast.Attribute):
+                names.append(node.attr)
+            elif isinstance(node, ast.alias):
+                names.append(node.name)
+            elif isinstance(node, ast.ImportFrom):
+                names.append(node.module or "")
+            elif isinstance(node, ast.FunctionDef | ast.ClassDef):
+                names.append(node.name)
+            elif isinstance(node, ast.arg | ast.keyword):
+                names.append(node.arg or "")
+            elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                names.append(node.value)
+        # Split snake_case, CamelCase and dotted names into words, so "actions" is not "act".
+        words = {w.lower() for text in names for w in re.findall(r"[A-Z]?[a-z0-9]+|[A-Z0-9]+(?![a-z])", text)}
+        assert not words & policies, (name, words & policies)
 
 
 def test_no_export_script_shadows_a_package_it_imports():
