@@ -1988,6 +1988,20 @@ def test_tensorrt_engine_loads_the_file_a_piece_at_a_time(tmp_path, monkeypatch)
     assert isinstance(export_tensorrt.runtime().gpu_allocator, fake_trt.IGpuAllocator)
 
 
+def test_export_engine_refuses_another_task_before_loading_the_programs(tmp_path, monkeypatch):
+    """Loading a large chain takes long on a small board, so a wrong --task is refused first."""
+    import json
+
+    from lerobot.inference.export import engine as export_engine
+
+    _write_export_folder(tmp_path, [[0, 1, 2], [0, 2, 4]])
+    info = json.loads((tmp_path / "export.json").read_text())
+    (tmp_path / "export.json").write_text(json.dumps({**info, "task": "pick", "task_fixed": True}))
+    monkeypatch.setattr(export_engine, "load_programs", lambda *args: pytest.fail("loaded the programs"))
+    with pytest.raises(ValueError, match="only runs the task it was exported for"):
+        export_engine.ExportInferenceEngine(tmp_path, task="place")
+
+
 def test_export_engine_refuses_another_task_than_a_fixed_task_export(tmp_path, cpu_export_engine):
     import json
 

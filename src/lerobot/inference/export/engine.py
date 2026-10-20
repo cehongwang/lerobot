@@ -135,14 +135,14 @@ class ExportInferenceEngine(InferenceEngine):
     def __init__(self, folder: Path, task: str, rename_map: dict[str, str] | None = None) -> None:
         super().__init__(task=task)
         info = json.loads((folder / EXPORT_INFO).read_text())
+        self._fixed_task: str | None = info["task"] if info.get("task_fixed") else None
+        self._check_task(task)
         self._frame_names = [name for name in info["inputs"] if name != NOISE]
         self._noise_shape = tuple(info["noise_shape"]) if "noise_shape" in info else None
         self._image_resize = info.get("image_resize")
         self._rename = rename_map or {}
         self._chain = ProgramChain(load_programs(folder, info), info)
         self._actions: deque[np.ndarray] = deque()
-        self._fixed_task: str | None = info["task"] if info.get("task_fixed") else None
-        self._check_task(task)
         self._check(folder / info["test_case"], info["tolerance"])
         logger.info("Exported policy loaded from %s (%s)", folder, info["backend"])
 
