@@ -78,21 +78,35 @@ class Part:
 def parse_args(description: str, route: str) -> tuple[argparse.Namespace, Any]:
     """The route's command line with the arguments of the checkpoint's recipe, and that recipe."""
     parser = argparse.ArgumentParser(
-        description=description, formatter_class=argparse.RawDescriptionHelpFormatter
+        description=description, formatter_class=argparse.RawDescriptionHelpFormatter, add_help=False
     )
     parser.add_argument("--policy.path", dest="policy_path", required=True, help="Trained policy checkpoint.")
-    policy_type = PreTrainedConfig.from_pretrained(parser.parse_known_args()[0].policy_path).type
-    if policy_type not in POLICIES:
-        raise SystemExit(f"No export recipe for {policy_type!r} policies; supported: {', '.join(POLICIES)}.")
-    recipe = importlib.import_module(policy_type)
     parser.add_argument(
         "--output_dir", type=Path, help="Folder to write. Default: a new one under outputs/export."
     )
-    parser.add_argument(
-        "--tolerance", type=float, default=recipe.TOLERANCE, help="Largest allowed action error, robot units."
-    )
     parser.add_argument("--part", help=argparse.SUPPRESS)
-    recipe.add_arguments(parser)
+    # The checkpoint names the recipe, which adds its own arguments, so it is read before help is shown.
+    checkpoint = argparse.ArgumentParser(add_help=False)
+    checkpoint.add_argument("--policy.path", dest="policy_path")
+    policy_path = checkpoint.parse_known_args()[0].policy_path
+    recipe = None
+    if policy_path is not None:
+        policy_type = PreTrainedConfig.from_pretrained(policy_path).type
+        if policy_type not in POLICIES:
+            raise SystemExit(
+                f"No export recipe for {policy_type!r} policies; supported: {', '.join(POLICIES)}."
+            )
+        recipe = importlib.import_module(policy_type)
+        parser.add_argument(
+            "--tolerance",
+            type=float,
+            default=recipe.TOLERANCE,
+            help="Largest allowed action error, robot units.",
+        )
+        recipe.add_arguments(parser)
+    parser.add_argument(
+        "-h", "--help", action="help", help="Show this help; with --policy.path, the recipe's too."
+    )
     parser.set_defaults(route=route)
     return parser.parse_args(), recipe
 

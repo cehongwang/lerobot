@@ -108,6 +108,29 @@ def test_routes_compile_with_the_shared_tensorrt_options(route, tmp_path, name):
         assert {key: options[key] for key in TENSORRT_OPTIONS} == TENSORRT_OPTIONS
 
 
+@pytest.mark.parametrize("checkpoint", [False, True], ids=["alone", "with_checkpoint"])
+def test_help_lists_the_route_and_recipe_arguments(tmp_path, monkeypatch, capsys, checkpoint):
+    monkeypatch.syspath_prepend(str(EXAMPLES))
+    from export import parse_args
+
+    argv = ["executorch_trt.py", "--help"]
+    if checkpoint:
+        (tmp_path / "config.json").write_text('{"type": "smolvla"}')
+        argv.insert(1, f"--policy.path={tmp_path}")
+    monkeypatch.setattr(sys, "argv", argv)
+    try:
+        with pytest.raises(SystemExit) as exited:
+            parse_args("Export a policy.", "executorch_trt")
+    finally:
+        for name in ("export", "smolvla"):
+            sys.modules.pop(name, None)
+    assert exited.value.code == 0
+    text = capsys.readouterr().out
+    assert "--policy.path" in text and "--output_dir" in text
+    if checkpoint:
+        assert "--tolerance" in text and "--dataset.repo_id" in text and "--task" in text
+
+
 def test_route_scripts_name_no_policy():
     for name in ("executorch_trt", "onnx_trt", "torch_trt"):
         code = (EXAMPLES / f"{name}.py").read_text().split('"""', 2)[2]
