@@ -282,9 +282,9 @@ class TensorRTEngine:
             )
         check_cuda(cuda.cudaGraphLaunch(self._graph, stream))
 
-    def __call__(self, *inputs: np.ndarray | CudaBuffer) -> np.ndarray | tuple[np.ndarray, ...]:
-        outputs = [value.numpy(self._stream) for value in self.run_device(*inputs)]
-        return outputs[0] if len(outputs) == 1 else tuple(outputs)
+    def __call__(self, *inputs: np.ndarray | CudaBuffer) -> np.ndarray:
+        (output,) = self.run_device(*inputs)
+        return output.numpy(self._stream)
 
     def upload(self, value: np.ndarray) -> np.ndarray:
         # Each run copies a host input into the engine's own input buffer, which a CUDA graph reads at a

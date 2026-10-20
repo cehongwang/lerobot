@@ -35,7 +35,7 @@ class ExecuTorchProgram:
     """Run a `.pte` program whose inputs and outputs live on the GPU.
 
     `run_device` keeps its outputs on the GPU, so the next program in a chain reads them where they are.
-    Calling the program takes and returns host arrays.
+    Calling the last program of a chain takes host arrays and returns its one output, the actions, on the host.
     """
 
     def __init__(self, path: Path):
@@ -58,9 +58,9 @@ class ExecuTorchProgram:
     def run_device(self, *inputs: np.ndarray | Any) -> tuple[Any, ...]:
         return tuple(self._method.execute([on_device(value) for value in inputs]))
 
-    def __call__(self, *inputs: np.ndarray | Any) -> np.ndarray | tuple[np.ndarray, ...]:
-        outputs = [to_host(value) for value in self.run_device(*inputs)]
-        return outputs[0] if len(outputs) == 1 else tuple(outputs)
+    def __call__(self, *inputs: np.ndarray | Any) -> np.ndarray:
+        (output,) = self.run_device(*inputs)
+        return to_host(output)
 
     def upload(self, value: np.ndarray) -> Any:
         return on_device(value)

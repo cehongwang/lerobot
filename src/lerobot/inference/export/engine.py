@@ -47,8 +47,8 @@ class Program(Protocol):
     def run_device(self, *inputs: Any) -> tuple[Any, ...]:
         """The outputs where the program left them, for the next program to read without a copy."""
 
-    def __call__(self, *inputs: Any) -> np.ndarray | tuple[np.ndarray, ...]:
-        """The outputs as host arrays."""
+    def __call__(self, *inputs: Any) -> np.ndarray:
+        """The program's one output, the actions, as a host array."""
 
     def upload(self, value: np.ndarray) -> Any:
         """`value` where the program reads its inputs, for many runs to read without another copy."""

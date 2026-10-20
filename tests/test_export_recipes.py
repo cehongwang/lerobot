@@ -53,8 +53,8 @@ class Replay:
         return outputs if isinstance(outputs, tuple) else (outputs,)
 
     def __call__(self, *inputs):
-        outputs = [value.numpy() for value in self.run_device(*inputs)]
-        return outputs[0] if len(outputs) == 1 else tuple(outputs)
+        (output,) = self.run_device(*inputs)
+        return output.numpy()
 
     def upload(self, value):
         return value

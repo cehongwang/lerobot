@@ -37,9 +37,9 @@ class AOTInductorPackage:
             outputs = self._model(*tensors)
         return tuple(outputs) if isinstance(outputs, list | tuple) else (outputs,)
 
-    def __call__(self, *inputs: np.ndarray | torch.Tensor) -> np.ndarray | tuple[np.ndarray, ...]:
-        outputs = [value.cpu().numpy() for value in self.run_device(*inputs)]
-        return outputs[0] if len(outputs) == 1 else tuple(outputs)
+    def __call__(self, *inputs: np.ndarray | torch.Tensor) -> np.ndarray:
+        (output,) = self.run_device(*inputs)
+        return output.cpu().numpy()
 
     def upload(self, value: np.ndarray) -> torch.Tensor:
         return torch.from_numpy(value).to("cuda")

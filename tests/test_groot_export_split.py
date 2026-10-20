@@ -338,8 +338,8 @@ def test_step_slices_and_program_chain_match_action_head(recipe, alternate, inte
             return result if isinstance(result, tuple) else (result,)
 
         def __call__(self, *values):
-            outputs = [x.numpy() for x in self.run_device(*values)]
-            return outputs[0] if len(outputs) == 1 else tuple(outputs)
+            (output,) = self.run_device(*values)
+            return output.numpy()
 
         def upload(self, value):
             return value
@@ -455,8 +455,8 @@ def test_diffusion_parts_export_to_onnx_and_run_as_chain(recipe, monkeypatch, tm
             )
 
         def __call__(self, *arrays):
-            outputs = self.run_device(*arrays)
-            return outputs[0] if len(outputs) == 1 else outputs
+            (output,) = self.run_device(*arrays)
+            return output
 
         def upload(self, value):
             return value
