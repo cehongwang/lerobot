@@ -47,6 +47,7 @@ from export import (
     write_folder,
 )
 from torch import Tensor, nn
+from transformers.models.qwen3_vl.modeling_qwen3_vl import apply_rotary_pos_emb_vision
 from transformers.utils import cached_file
 
 from lerobot.configs import PreTrainedConfig
@@ -88,25 +89,12 @@ def part_names(args: argparse.Namespace) -> list[str]:
     ]
 
 
-# From NVIDIA's export_onnx_n1d7.py: the vision rotary embedding written out with plain tensor operations.
-def _apply_rotary_real(x: Tensor, cos: Tensor, sin: Tensor) -> Tensor:
-    orig_dtype = x.dtype
-    x = x.float()
-    cos = cos.float().unsqueeze(1)
-    sin = sin.float().unsqueeze(1)
-    half = x.shape[-1] // 2
-    rotated = torch.cat((-x[..., half:], x[..., :half]), dim=-1)
-    return (x * cos + rotated * sin).to(orig_dtype)
-
-
 # Fix the image sequence lengths at export time instead of reading cu_seqlens inside the graph.
 def vision_attention(attn: nn.Module, hidden_states: Tensor, position_embeddings, chunk_sizes: list[int]):
     seq_length = hidden_states.shape[0]
     qkv = attn.qkv(hidden_states).reshape(seq_length, 3, attn.num_heads, -1)
     q, k, v = qkv.permute(1, 0, 2, 3).unbind(0)
-    cos, sin = position_embeddings
-    q = _apply_rotary_real(q, cos, sin)
-    k = _apply_rotary_real(k, cos, sin)
+    q, k = apply_rotary_pos_emb_vision(q, k, *position_embeddings)
     outputs = []
     for q_c, k_c, v_c in zip(q.split(chunk_sizes), k.split(chunk_sizes), v.split(chunk_sizes), strict=True):
         q_c, k_c, v_c = (x.transpose(0, 1)[None] for x in (q_c, k_c, v_c))
@@ -149,53 +137,21 @@ class Qwen3VisionForExport(nn.Module):
         return self.merger(hidden_states), torch.stack(deepstack_features)
 
 
-class LLMForExport(nn.Module):
-    """NVIDIA's language model wrapper: rope positions as an input, its own causal mask and deepstack add.
+def causal_mask(dtype, device, batch_size: int, seq_len: int, attention_mask: Tensor) -> Tensor:
+    """NVIDIA's causal and padding mask for the language model, as an additive float mask."""
+    mask_value = torch.finfo(dtype).min * 0.5
+    causal = torch.triu(torch.full((seq_len, seq_len), mask_value, device=device, dtype=dtype), 1)
+    causal = causal[None, None].expand(batch_size, 1, -1, -1)
+    padding = (1.0 - attention_mask[:, None, None, :].to(dtype)) * mask_value
+    return causal + padding
 
-    It runs the backbone's own decoder layers and rotary embedding, and returns the last layer's output
-    before the final norm, which is what GR00T's action head reads.
-    """
 
-    def __init__(self, text_model: nn.Module):
-        super().__init__()
-        self.layers = text_model.layers
-        self.rotary_emb = text_model.rotary_emb
-
-    @staticmethod
-    def _simple_causal_mask(dtype, device, batch_size, seq_len, attention_mask):
-        mask_value = torch.finfo(dtype).min * 0.5
-        causal_mask = torch.triu(torch.full((seq_len, seq_len), mask_value, device=device, dtype=dtype), 1)
-        causal_mask = causal_mask[None, None].expand(batch_size, 1, -1, -1)
-        padding_mask = (1.0 - attention_mask[:, None, None, :].to(dtype)) * mask_value
-        return causal_mask + padding_mask
-
-    @staticmethod
-    def _deepstack_add(hidden_states, visual_pos_masks, visual_embeds):
-        delta = torch.zeros_like(hidden_states).masked_scatter(
-            visual_pos_masks.unsqueeze(-1).expand_as(hidden_states), visual_embeds
-        )
-        return hidden_states + delta
-
-    def forward(self, inputs_embeds, attention_mask, position_ids, visual_pos_masks, *deepstack):
-        batch_size, seq_len = inputs_embeds.shape[:2]
-        attn_mask = self._simple_causal_mask(
-            inputs_embeds.dtype, inputs_embeds.device, batch_size, seq_len, attention_mask
-        )
-        hidden_states = inputs_embeds
-        position_embeddings = self.rotary_emb(hidden_states, position_ids)
-        for layer_idx, decoder_layer in enumerate(self.layers):
-            hidden_states = decoder_layer(
-                hidden_states,
-                attention_mask=attn_mask,
-                position_ids=position_ids[0],
-                past_key_values=None,
-                position_embeddings=position_embeddings,
-            )
-            if layer_idx < len(deepstack):
-                hidden_states = self._deepstack_add(
-                    hidden_states, visual_pos_masks, deepstack[layer_idx].to(hidden_states.dtype)
-                )
-        return hidden_states
+def deepstack_add(hidden_states: Tensor, visual_pos_masks: Tensor, visual_embeds: Tensor) -> Tensor:
+    """Add a layer's deepstack image features at the image token positions, as Qwen3-VL does."""
+    delta = torch.zeros_like(hidden_states).masked_scatter(
+        visual_pos_masks.unsqueeze(-1).expand_as(hidden_states), visual_embeds
+    )
+    return hidden_states + delta
 
 
 class GrootObservation(nn.Module):
@@ -359,9 +315,7 @@ class GrootLanguageModel(nn.Module):
                 hidden = self.text_embeds.masked_scatter(
                     self.image_token_mask, hidden.to(self.text_embeds.dtype)
                 )
-            mask = LLMForExport._simple_causal_mask(
-                hidden.dtype, hidden.device, *hidden.shape[:2], self.attention_mask
-            )
+            mask = causal_mask(hidden.dtype, hidden.device, *hidden.shape[:2], self.attention_mask)
             positions = self.rotary_emb(hidden, self.position_ids)
             for index, layer in enumerate(self.layers, self.start):
                 hidden = layer(
@@ -372,9 +326,7 @@ class GrootLanguageModel(nn.Module):
                     position_embeddings=positions,
                 )
                 if index in deepstack:
-                    hidden = LLMForExport._deepstack_add(
-                        hidden, self.visual_pos_masks, deepstack[index].to(hidden.dtype)
-                    )
+                    hidden = deepstack_add(hidden, self.visual_pos_masks, deepstack[index].to(hidden.dtype))
             if self.last:
                 (state,) = inputs[added:]
                 # GR00T consumes the decoder output before Qwen's final norm.

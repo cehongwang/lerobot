@@ -33,6 +33,26 @@ def recipe(monkeypatch):
     return importlib.import_module("groot")
 
 
+def whole_language_model(
+    recipe, text, embeddings, attention_mask, position_ids, visual_pos_masks, *deepstack
+):
+    """All layers in one run, with the recipe's mask and deepstack add: the last layer's output before the norm."""
+    hidden = embeddings
+    mask = recipe.causal_mask(hidden.dtype, hidden.device, *hidden.shape[:2], attention_mask)
+    positions = text.rotary_emb(hidden, position_ids)
+    for index, layer in enumerate(text.layers):
+        hidden = layer(
+            hidden,
+            attention_mask=mask,
+            position_ids=position_ids[0],
+            past_key_values=None,
+            position_embeddings=positions,
+        )
+        if index < len(deepstack):
+            hidden = recipe.deepstack_add(hidden, visual_pos_masks, deepstack[index].to(hidden.dtype))
+    return hidden
+
+
 def action_pipeline(*steps):
     """A postprocessor that takes and returns an action tensor, as the policies' own do."""
     from lerobot.processor import (
@@ -151,8 +171,14 @@ def test_language_slices_preserve_global_deepstack_indices_and_pre_norm_output(r
     deepstack = tuple(torch.randn(2, 32) for _ in range(3))
     with torch.no_grad():
         embeddings = fixed["text_embeds"].masked_scatter(fixed["image_token_mask"], images)
-        expected = recipe.LLMForExport(text)(
-            embeddings, fixed["attention_mask"], fixed["position_ids"], fixed["visual_pos_masks"], *deepstack
+        expected = whole_language_model(
+            recipe,
+            text,
+            embeddings,
+            fixed["attention_mask"],
+            fixed["position_ids"],
+            fixed["visual_pos_masks"],
+            *deepstack,
         )
         expected = head.vl_self_attention(head.vlln(expected))
         expected_state = head.state_encoder(state, fixed["embodiment_id"])
@@ -197,7 +223,7 @@ def test_vision_wrapper_matches_the_hugging_face_vision_model(recipe):
     torch.testing.assert_close(deepstack, torch.stack(expected.deepstack_features), rtol=0, atol=1e-6)
 
 
-def test_language_wrapper_matches_the_hugging_face_text_model(recipe):
+def test_language_model_layers_match_the_hugging_face_text_model(recipe):
     from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLTextConfig
     from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLTextModel
 
@@ -218,7 +244,7 @@ def test_language_wrapper_matches_the_hugging_face_text_model(recipe):
     deepstack = [torch.randn(2, 32) for _ in range(3)]
     embeddings = fixed["text_embeds"].masked_scatter(fixed["image_token_mask"], torch.randn(2, 32))
     last = []
-    # The wrapper returns the last layer's output, before the model's final norm.
+    # GR00T reads the last layer's output, before the model's final norm.
     text.layers[-1].register_forward_hook(lambda module, args, output: last.append(output))
     with torch.no_grad():
         text(
@@ -228,8 +254,14 @@ def test_language_wrapper_matches_the_hugging_face_text_model(recipe):
             visual_pos_masks=fixed["visual_pos_masks"],
             deepstack_visual_embeds=deepstack,
         )
-        actual = recipe.LLMForExport(text)(
-            embeddings, fixed["attention_mask"], fixed["position_ids"], fixed["visual_pos_masks"], *deepstack
+        actual = whole_language_model(
+            recipe,
+            text,
+            embeddings,
+            fixed["attention_mask"],
+            fixed["position_ids"],
+            fixed["visual_pos_masks"],
+            *deepstack,
         )
     expected = last[0][0] if isinstance(last[0], tuple) else last[0]
     valid = fixed["attention_mask"][0].bool()
