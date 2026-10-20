@@ -1,6 +1,6 @@
 # Compiled LeRobot policies on an NVIDIA Jetson
 
-Train a policy as usual, export it into a compiled folder, and run that folder with `lerobot-rollout`, the same command you use for a PyTorch checkpoint. A compiled policy runs several times faster and uses a fraction of the memory, so the larger policies also fit on a small board.
+Train a policy as usual, export it into a compiled folder, and run that folder with `lerobot-rollout`, the same command you use for a PyTorch checkpoint. In the results below, a compiled policy runs 2 to 6 times faster than in PyTorch and needs a sixth to a half of its memory, so the larger policies also fit on a small board.
 
 Supported policies: ACT, SmolVLA, pi0.5 and GR00T N1.7.
 
@@ -127,7 +127,7 @@ Each value is the median of three runs of 100 chunks. Differences of a few milli
 
 ### Memory
 
-Memory the whole board uses while the policy runs, in MiB (the CPU and the GPU share it on a Jetson). Lower is better.
+Extra memory the board needs while the policy runs: the drop in available memory plus any growth in swap, in MiB (the CPU and the GPU share it on a Jetson). Lower is better.
 
 Thor:
 
