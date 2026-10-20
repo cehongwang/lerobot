@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 EXPORT_INFO = "export.json"
 NOISE = "noise"
-BACKENDS = ("executorch_tensorrt", "onnx_tensorrt", "torch_tensorrt")
+BACKENDS = ("executorch_trt", "onnx_trt", "torch_trt")
 
 
 class Program(Protocol):
@@ -62,18 +62,18 @@ def load_programs(folder: Path, info: dict) -> Mapping[str, Program]:
     """Load the folder's programs with the backend `export.json` names."""
     backend = info["backend"]
     programs = info["programs"]
-    if backend == "onnx_tensorrt":
+    if backend == "onnx_trt":
         from .tensorrt import load_engines
 
         return load_engines(folder, programs, info.get("cuda_graphs", False))
-    if backend == "executorch_tensorrt":
+    if backend == "executorch_trt":
         from .executorch import ExecuTorchProgram
 
         # The programs run one after another, so they can share one activation scratch.
         return {
             name: ExecuTorchProgram(folder / p["file"], shared_scratch=True) for name, p in programs.items()
         }
-    if backend == "torch_tensorrt":
+    if backend == "torch_trt":
         from .aoti import AOTInductorPackage
 
         return {name: AOTInductorPackage(folder / p["file"]) for name, p in programs.items()}

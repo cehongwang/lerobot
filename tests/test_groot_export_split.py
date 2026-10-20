@@ -407,7 +407,7 @@ def test_diffusion_parts_export_to_onnx_and_run_as_chain(recipe, monkeypatch, tm
         )
 
     monkeypatch.setitem(sys.modules, "build_engine", SimpleNamespace(build_engine=check_engine))
-    compile_part = runpy.run_path(str(Path(recipe.__file__).with_name("onnx_tensorrt.py")))["compile_part"]
+    compile_part = runpy.run_path(str(Path(recipe.__file__).with_name("onnx_trt.py")))["compile_part"]
     programs, metadata = {}, {}
 
     class Program:
@@ -500,14 +500,12 @@ def n17_decoder(relative=False):
     )
 
 
-@pytest.mark.parametrize(
-    "backend", ["executorch_tensorrt", "torch_tensorrt", "executorch_cuda", "onnx_tensorrt"]
-)
+@pytest.mark.parametrize("backend", ["executorch_trt", "torch_trt", "executorch_cuda", "onnx_trt"])
 def test_numpy_action_decoding_is_refused_only_where_it_cannot_compile(recipe, backend):
     from lerobot.policies.groot.processor_groot import GrootActionUnpackUnnormalizeStep
 
     recipe.check_traceable_decode(action_pipeline(GrootActionUnpackUnnormalizeStep()), backend)
-    if backend == "onnx_tensorrt":
+    if backend == "onnx_trt":
         recipe.check_traceable_decode(action_pipeline(n17_decoder()), backend)
     else:
         with pytest.raises(ValueError, match="only the ONNX-TensorRT route"):

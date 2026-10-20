@@ -108,7 +108,7 @@ from lerobot.rollout.configs import RolloutConfig
 
 folder = Path(sys.argv[1])
 info = {
-    "backend": "executorch_tensorrt",
+    "backend": "executorch_trt",
     "programs": {
         "model": {
             "file": "model.pte",

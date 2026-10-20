@@ -58,7 +58,7 @@ def part():
 
 
 def test_executorch_route_keeps_inputs_and_outputs_on_the_gpu_and_records_cuda_graphs(route, tmp_path):
-    compile_part, stubs = route("executorch_tensorrt")
+    compile_part, stubs = route("executorch_trt")
     compile_part(part(), tmp_path / "step.pte")
     tensorrt = stubs["torch_tensorrt"]
     kwargs = tensorrt.save.call_args.kwargs
@@ -73,7 +73,7 @@ def test_executorch_route_keeps_inputs_and_outputs_on_the_gpu_and_records_cuda_g
 
 
 def test_onnx_route_keeps_the_onnx_file_and_builds_the_engine_beside_it(route, tmp_path):
-    compile_part, stubs = route("onnx_tensorrt")
+    compile_part, stubs = route("onnx_trt")
     compile_part(part(), tmp_path / "step.engine")
     onnx_path = torch.onnx.export.call_args.args[2]
     assert onnx_path == tmp_path / "step.onnx"
@@ -84,20 +84,20 @@ def test_onnx_route_keeps_the_onnx_file_and_builds_the_engine_beside_it(route, t
 
 
 def test_torch_tensorrt_route_saves_an_aoti_package(route, tmp_path):
-    compile_part, stubs = route("torch_tensorrt")
+    compile_part, stubs = route("torch_trt")
     compile_part(part(), tmp_path / "step.pt2")
     tensorrt = stubs["torch_tensorrt"]
     assert tensorrt.save.call_args.args[1] == str(tmp_path / "step.pt2")
     assert tensorrt.save.call_args.kwargs["output_format"] == "aot_inductor"
 
 
-@pytest.mark.parametrize("name", ["executorch_tensorrt", "onnx_tensorrt", "torch_tensorrt"])
+@pytest.mark.parametrize("name", ["executorch_trt", "onnx_trt", "torch_trt"])
 def test_routes_compile_with_the_shared_tensorrt_options(route, tmp_path, name):
     from export import TENSORRT_OPTIONS
 
     compile_part, stubs = route(name)
     compile_part(part(), tmp_path / "step.bin")
-    if name == "onnx_tensorrt":
+    if name == "onnx_trt":
         build = stubs["build_engine"].build_engine
         assert build.call_args.args[2:] == (
             TENSORRT_OPTIONS["workspace_size"],
@@ -109,6 +109,27 @@ def test_routes_compile_with_the_shared_tensorrt_options(route, tmp_path, name):
 
 
 def test_route_scripts_name_no_policy():
-    for name in ("executorch_tensorrt", "onnx_tensorrt", "torch_tensorrt"):
+    for name in ("executorch_trt", "onnx_trt", "torch_trt"):
         code = (EXAMPLES / f"{name}.py").read_text().split('"""', 2)[2]
         assert not any(policy in code for policy in ("act", "smolvla", "pi05", "groot")), name
+
+
+def test_no_export_script_shadows_a_package_it_imports():
+    """A script named like a package it imports hides that package, because its own folder is first on
+    sys.path when it runs. torch_trt.py importing torch_tensorrt is the case this guards against. The
+    check is structural, so it catches the clash even where the package is not installed."""
+    import ast
+
+    scripts = sorted(EXAMPLES.glob("*.py"))
+    filenames = {s.name for s in scripts}
+    # The modules a sibling is meant to import locally: the shared driver, the engine rebuilder, the recipes.
+    local = {"export", "build_engine", "act", "smolvla", "pi05", "groot"}
+    imported = set()
+    for script in scripts:
+        for node in ast.walk(ast.parse(script.read_text())):
+            if isinstance(node, ast.Import):
+                imported.update(alias.name.split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                imported.add(node.module.split(".")[0])
+    shadowed = sorted(name for name in imported - local if f"{name}.py" in filenames)
+    assert not shadowed, f"these scripts are named like packages they import and shadow them: {shadowed}"

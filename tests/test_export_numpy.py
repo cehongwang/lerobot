@@ -67,7 +67,7 @@ def executorch(monkeypatch):
     return SimpleNamespace(programs=programs, calls=calls, options=options)
 
 
-def chain_info(names, backend="executorch_tensorrt", suffix=".pte", **info):
+def chain_info(names, backend="executorch_trt", suffix=".pte", **info):
     return {
         "backend": backend,
         "inputs": info.pop("inputs"),
@@ -198,7 +198,7 @@ def test_engine_feeds_the_raw_frame_and_fresh_noise_and_plays_the_chunk(tmp_path
     frame = {"observation.state": state, "observation.images.camera": image}
     info = chain_info(
         {"model": ([*names, "noise"], ["action"])},
-        backend="onnx_tensorrt",
+        backend="onnx_trt",
         suffix=".engine",
         inputs=[*names, "noise"],
         noise_shape=[4, 3],
@@ -266,7 +266,7 @@ def test_torch_tensorrt_package_takes_host_arrays_and_returns_host_actions(tmp_p
             "actions": (["x_t"], ["action"]),
         }
         info = {
-            "backend": "torch_tensorrt",
+            "backend": "torch_trt",
             "inputs": ["observation.state", "noise"],
             "programs": {
                 name: {"file": f"{name}.pt2", "inputs": inputs, "outputs": outputs}
@@ -283,7 +283,7 @@ def test_torch_tensorrt_package_takes_host_arrays_and_returns_host_actions(tmp_p
     else:
         info = chain_info(
             {"model": (["observation.state"], ["action"])},
-            "torch_tensorrt",
+            "torch_trt",
             ".pt2",
             inputs=["observation.state"],
         )

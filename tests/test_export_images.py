@@ -107,7 +107,7 @@ def test_runtime_resizes_both_startup_and_live_frames(tmp_path, monkeypatch):
     expected = state[None]
     frame = {"observation.images.camera": image, "observation.state": state}
     info = {
-        "backend": "torch_tensorrt",
+        "backend": "torch_trt",
         "programs": {"model": {"file": "model.pt2", "inputs": list(frame), "outputs": ["action"]}},
         "inputs": list(frame),
         "test_case": "case.safetensors",
