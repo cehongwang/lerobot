@@ -25,6 +25,7 @@ from collections.abc import Iterator
 
 import torch
 from export import (
+    NOISE,
     Part,
     add_dataset_arguments,
     dataset_frame,
@@ -101,7 +102,7 @@ class Export:
         tensors = PolicyProcessorPipeline(steps=[s for s in preprocessor.steps if s not in text])
         module = SmolVLAChunk(self.policy, tensors, postprocessor, list(self.frame), prompt)
         inputs = (*(torch.from_numpy(x).to(device()) for x in self.frame.values()), self.noise)
-        yield Part("model", module, inputs, [*self.frame, "noise"], [ACTION])
+        yield Part("model", module, inputs, [*self.frame, NOISE], [ACTION])
 
     def observation(self) -> dict:
         """The test frame and task as `lerobot-rollout` hands them to the policy's preprocessor."""

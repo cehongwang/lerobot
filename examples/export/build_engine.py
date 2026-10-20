@@ -28,6 +28,7 @@ import time
 from pathlib import Path
 
 from lerobot.inference.export import ExportInferenceEngine
+from lerobot.inference.export.engine import EXPORT_INFO
 
 # TensorRT's default. On the Orin Nano, level 5 built pi0.5's step program, but it did not load.
 OPTIMIZATION_LEVEL = 3
@@ -71,7 +72,7 @@ def main() -> None:
     )
     parser.add_argument("folder", type=Path, help="A folder onnx_trt.py wrote.")
     args = parser.parse_args()
-    info = json.loads((args.folder / "export.json").read_text())
+    info = json.loads((args.folder / EXPORT_INFO).read_text())
     if info["backend"] != "onnx_trt":
         raise SystemExit("Only an ONNX-TensorRT folder keeps the ONNX files to rebuild its engines from.")
     for program in info["programs"].values():

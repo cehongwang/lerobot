@@ -41,6 +41,7 @@ from torch import Tensor, nn
 
 from lerobot.configs.policies import PreTrainedConfig
 from lerobot.datasets import LeRobotDatasetMetadata
+from lerobot.inference.export.engine import EXPORT_INFO, NOISE
 from lerobot.policies.factory import make_pre_post_processors
 from lerobot.processor import (
     AbsoluteActionsProcessorStep,
@@ -53,7 +54,6 @@ from lerobot.utils.feature_utils import dataset_to_policy_features
 
 POLICIES = ("act", "smolvla", "pi05", "groot")
 TEST_CASE = "test_case.safetensors"
-NOISE = "noise"
 # The same for every policy: they fit the builds into an 8 GB Jetson Orin Nano beside the rest.
 TENSORRT_OPTIONS = {
     "min_block_size": 1,
@@ -186,7 +186,7 @@ def write_folder(
         "tolerance": args.tolerance,
         **info,
     }
-    (args.output_dir / "export.json").write_text(json.dumps(info, indent=2) + "\n")
+    (args.output_dir / EXPORT_INFO).write_text(json.dumps(info, indent=2) + "\n")
     print(f"Wrote {args.output_dir}")
 
 
