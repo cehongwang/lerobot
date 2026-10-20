@@ -3389,7 +3389,6 @@ export = [
     { name = "cuda-bindings", version = "13.4.4", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
     { name = "ml-dtypes" },
     { name = "onnx" },
-    { name = "onnxruntime" },
     { name = "onnxscript" },
 ]
 fastwam = [
@@ -3655,6 +3654,7 @@ smolvla = [
 ]
 test = [
     { name = "mock-serial", marker = "sys_platform != 'win32'" },
+    { name = "onnxruntime" },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "pytest-timeout" },
@@ -3912,7 +3912,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.0.0,<2.3.0" },
     { name = "onnx", marker = "extra == 'export'", specifier = ">=1.17.0,<2.0.0" },
     { name = "onnx", marker = "extra == 'unitree-g1'", specifier = ">=1.16.0,<2.0.0" },
-    { name = "onnxruntime", marker = "extra == 'export'", specifier = ">=1.16.0,<2.0.0" },
+    { name = "onnxruntime", marker = "extra == 'test'", specifier = ">=1.16.0,<2.0.0" },
     { name = "onnxruntime", marker = "extra == 'unitree-g1'", specifier = ">=1.16.0,<2.0.0" },
     { name = "onnxscript", marker = "extra == 'export'", specifier = ">=0.7.0,<0.8.0" },
     { name = "openai", marker = "extra == 'annotations'", specifier = ">=1.40,<2.0" },
