@@ -158,8 +158,8 @@ class TensorRTEngine:
 
     `run_device` queues the work and returns without waiting for it, keeping the outputs in device buffers,
     which another engine on the same stream can read. Reading them on the host waits for the stream.
-    The first run records the engine's work in a CUDA graph and later runs replay it, so every run reads
-    the input buffers the first one did.
+    With `cuda_graphs`, the first run records the engine's work in a CUDA graph and later runs replay it,
+    so every run must pass the same input buffers.
     """
 
     def __init__(
@@ -168,6 +168,7 @@ class TensorRTEngine:
         input_names: list[str],
         output_names: list[str],
         stream: CudaStream,
+        cuda_graphs: bool = True,
     ):
         import tensorrt as trt
 
@@ -189,6 +190,7 @@ class TensorRTEngine:
         for name, output in zip(output_names, self._outputs, strict=True):
             if not self._context.set_tensor_address(name, output.ptr):
                 raise RuntimeError(f"TensorRT could not bind output {name}")
+        self._cuda_graphs = cuda_graphs
         self._graph = None
         self._graph_inputs: tuple[int, ...] | None = None
 
@@ -214,7 +216,9 @@ class TensorRTEngine:
             for name, dtype, value in zip(self._input_names, self._input_dtypes, inputs, strict=True):
                 if isinstance(value, CudaBuffer) and value.dtype != dtype:
                     raise ValueError(f"{name} has dtype {value.dtype}; the engine expects {dtype}")
-                if isinstance(value, CudaBuffer) and (value in self._outputs or name in self._inputs):
+                if isinstance(value, CudaBuffer) and (
+                    value in self._outputs or (self._cuda_graphs and name in self._inputs)
+                ):
                     # Copied into the engine's own input buffer: the engine must not read the output it writes,
                     # and a value that replaces an earlier host array must sit where the CUDA graph reads it.
                     buffer = self._input_buffer(name, value.shape, dtype)
@@ -245,7 +249,10 @@ class TensorRTEngine:
                 if not self._context.set_tensor_address(name, buffer.ptr):
                     raise RuntimeError(f"TensorRT could not bind input {name}")
                 addresses.append(buffer.ptr)
-            self._replay(tuple(addresses))
+            if self._cuda_graphs:
+                self._replay(tuple(addresses))
+            elif not self._context.execute_async_v3(self._stream.handle):
+                raise RuntimeError("TensorRT could not run the engine.")
         except BaseException:
             # Input arrays must remain alive until their queued copies finish.
             self._stream.synchronize()
@@ -299,7 +306,9 @@ class TensorRTEngine:
         self._engine = None
 
 
-def load_engines(folder: Path, programs: dict[str, dict]) -> dict[str, TensorRTEngine]:
+def load_engines(
+    folder: Path, programs: dict[str, dict], cuda_graphs: bool = True
+) -> dict[str, TensorRTEngine]:
     """Load a chain's engines on one stream, with one scratch allocation the size of the largest.
 
     The engines run one after another, so none needs its own scratch.
@@ -311,6 +320,7 @@ def load_engines(folder: Path, programs: dict[str, dict]) -> dict[str, TensorRTE
             program["inputs"],
             program["outputs"],
             stream,
+            cuda_graphs,
         )
         for name, program in programs.items()
     }

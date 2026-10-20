@@ -341,6 +341,31 @@ def test_a_split_denoising_step_runs_with_a_cuda_graph_per_engine(tmp_path, fake
         np.testing.assert_array_equal(chain(noise), 16 * noise)
 
 
+def test_a_folder_can_turn_cuda_graphs_off(tmp_path, fake_cuda, fake_engine, monkeypatch):
+    """GR00T's folder says so, because one of its engines allocates GPU memory while it is queued."""
+    from lerobot.inference.export.engine import ProgramChain, load_programs
+
+    monkeypatch.setattr(fake_cuda, "cudaStreamBeginCapture", MagicMock(side_effect=AssertionError))
+    programs = {
+        "step_0": {"file": "step_0.engine", "inputs": ["x_t", "timestep"], "outputs": ["hidden"]},
+        "step_1": {"file": "step_1.engine", "inputs": ["hidden", "x_t"], "outputs": ["x_next"]},
+        "actions": {"file": "actions.engine", "inputs": ["x_t"], "outputs": ["action"]},
+    }
+    info = {
+        "backend": "onnx_trt",
+        "inputs": ["noise"],
+        "programs": programs,
+        "steps": ["step_0", "step_1"],
+        "timesteps": [1.0, 0.5, 0.25],
+        "cuda_graphs": False,
+    }
+    chain = ProgramChain(load_programs(tmp_path, info), info)
+    noise = np.arange(3, dtype=np.float32).reshape(1, 3)
+    for _ in range(2):
+        np.testing.assert_array_equal(chain(noise), 16 * noise)
+    fake_cuda.cudaStreamBeginCapture.assert_not_called()
+
+
 def test_allocator_uses_plain_malloc_and_handles_failure(monkeypatch):
     cuda = SimpleNamespace(
         cudaMalloc=MagicMock(return_value=(0, 4096)),
@@ -424,7 +449,7 @@ def test_chained_engines_share_scratch_and_keep_the_cache_on_device(tmp_path, mo
         "actions": {"file": "actions.engine", "inputs": ["x_t"], "outputs": ["action"]},
     }
     engines = backend.load_engines(tmp_path, programs)
-    assert all(engine.args == ("stream",) for engine in engines.values())
+    assert all(engine.args == ("stream", True) for engine in engines.values())
     assert len(scratch) == 3 and all(buffer is scratch[0] for buffer in scratch)
     info = {
         "inputs": ["state", "noise"],

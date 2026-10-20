@@ -652,3 +652,19 @@ def test_part_names_cover_remainders_and_reject_unknown_parts(recipe, monkeypatc
     export = importlib.import_module("export")
     with pytest.raises(SystemExit, match="Unknown part"):
         export.export("script", Namespace(part="bad", policy_path="checkpoint"), recipe, None, ".pte")
+
+
+def test_folder_turns_cuda_graphs_off(recipe, monkeypatch):
+    written = {}
+    monkeypatch.setattr(recipe, "write_folder", lambda *args, **info: written.update(info))
+    export = SimpleNamespace(
+        folder_config=None,
+        frame={},
+        noise=None,
+        expected_actions=None,
+        timesteps=[1.0],
+        image_resize=None,
+        task="task",
+    )
+    recipe.Export.write(export, {"step_0": {}, "actions": {}}, Namespace())
+    assert written["cuda_graphs"] is False
