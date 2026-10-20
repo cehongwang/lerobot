@@ -21,7 +21,7 @@ cv2 = pytest.importorskip("cv2")
 
 
 def write_folder(folder: Path, shapes: dict[str, tuple], fps: int, corrupt: str | None = None) -> None:
-    """A frames folder as write_frames.py writes it: two frames per camera, of the given shapes."""
+    """A frames folder as write_frames.py writes it: two frames per camera, of the given names and shapes."""
     offsets, index = {}, {}
     for cam, shape in shapes.items():
         jpegs = [cv2.imencode(".jpg", np.full(shape, value, np.uint8))[1].tobytes() for value in (40, 200)]
@@ -36,6 +36,7 @@ def write_folder(folder: Path, shapes: dict[str, tuple], fps: int, corrupt: str 
         state=np.zeros((2, 6), np.float32),
         names=np.array(list("abcdef")),
         fps=fps,
+        cameras=np.array(list(shapes)),
         **index,
     )
 
@@ -50,11 +51,14 @@ def replay(monkeypatch):
     return lerobot_robot_replay
 
 
-def test_replay_keeps_each_camera_shape_and_the_recorded_rate(tmp_path, replay):
-    write_folder(tmp_path, {"wrist": (4, 6, 3), "scene": (8, 10, 3)}, fps=15)
+def test_replay_serves_the_recorded_cameras_with_their_shapes_and_rate(tmp_path, replay):
+    write_folder(tmp_path, {"front": (4, 6, 3), "top": (8, 10, 3)}, fps=15)
     robot = replay.ReplayRobot(replay.ReplayRobotConfig(frames_dir=str(tmp_path)))
-    assert robot.observation_features["wrist"] == (4, 6, 3)
-    assert robot.observation_features["scene"] == (8, 10, 3)
+    assert robot.observation_features == {
+        **dict.fromkeys("abcdef", float),
+        "front": (4, 6, 3),
+        "top": (8, 10, 3),
+    }
     assert robot._fps == 15
     assert replay.ReplayRobot(replay.ReplayRobotConfig(frames_dir=str(tmp_path), fps=30))._fps == 30
 

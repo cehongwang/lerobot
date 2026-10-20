@@ -12,10 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""A robot that replays a recorded SO-101 episode, so `lerobot-rollout` runs without hardware.
+"""A robot that replays recorded episodes, so `lerobot-rollout` runs without hardware.
 
-It serves the episode's two camera streams and 6-joint state on the wall clock at the recorded rate, like an SO-101
-with two OpenCV cameras, and accepts every action, stamping each one so the control loop's real rate can be read back.
+It serves the episodes' camera streams and joint state on the wall clock at the recorded rate, like a robot with
+OpenCV cameras, and accepts every action.
 """
 
 from __future__ import annotations
@@ -32,19 +32,15 @@ import numpy as np
 
 from lerobot.robots import Robot, RobotConfig
 
-CAMERAS = ("wrist", "scene")
-
 
 @RobotConfig.register_subclass("replay")
 @dataclass
 class ReplayRobotConfig(RobotConfig):
-    # Folder write_frames.py made: index.npz (state, joint names, frame shape) and one <camera>.jpg.bin per camera.
+    # Folder write_frames.py made: index.npz (state, names, frame shapes) and one <camera>.jpg.bin per camera.
     frames_dir: str = ""
     # Frames per second to play at; 0 plays at the rate the episodes were recorded.
     fps: int = 0
     start_frame: int = 0
-    # File the action and observation timestamps are written to at disconnect; empty writes nothing.
-    log_path: str = ""
 
 
 class ReplayRobot(Robot):
@@ -58,11 +54,12 @@ class ReplayRobot(Robot):
         index = np.load(folder / "index.npz")
         self._state = index["state"]
         self._motors = [str(name) for name in index["names"]]
-        self._shapes = {cam: tuple(int(n) for n in index[f"{cam}_shape"]) for cam in CAMERAS}
+        cameras = [str(cam) for cam in index["cameras"]]
+        self._shapes = {cam: tuple(int(n) for n in index[f"{cam}_shape"]) for cam in cameras}
         self._fps = config.fps or int(index["fps"])
-        # Read one JPEG at a time, so the recording never sits in this process's memory and RSS stays comparable.
+        # Read one JPEG at a time, so the recording never sits in memory.
         self._jpegs = {
-            cam: (os.open(folder / f"{cam}.jpg.bin", os.O_RDONLY), index[f"{cam}_offsets"]) for cam in CAMERAS
+            cam: (os.open(folder / f"{cam}.jpg.bin", os.O_RDONLY), index[f"{cam}_offsets"]) for cam in cameras
         }
         self._latest: dict[str, np.ndarray] = {}
         self._frame_lock = threading.Lock()
@@ -71,9 +68,6 @@ class ReplayRobot(Robot):
         self._threads: list[threading.Thread] = []
         self._t0 = 0.0
         self._connected = False
-        self._action_times: list[float] = []
-        self._actions: list[list[float]] = []
-        self._observation_times: list[float] = []
 
     @cached_property
     def observation_features(self) -> dict[str, type | tuple]:
@@ -130,13 +124,13 @@ class ReplayRobot(Robot):
 
     def connect(self, calibrate: bool = True) -> None:
         self._t0 = time.perf_counter()
-        for cam in CAMERAS:
+        for cam in self._jpegs:
             thread = threading.Thread(
                 target=self._camera_loop, args=(cam,), name=f"replay-{cam}", daemon=True
             )
             thread.start()
             self._threads.append(thread)
-        while len(self._latest) < len(CAMERAS):
+        while len(self._latest) < len(self._jpegs):
             self._raise_camera_error()
             time.sleep(0.005)
         self._connected = True
@@ -147,17 +141,13 @@ class ReplayRobot(Robot):
 
     def get_observation(self) -> dict:
         self._raise_camera_error()
-        now = time.perf_counter()
-        self._observation_times.append(now)
-        i = self._frame_index(now)
+        i = self._frame_index(time.perf_counter())
         observation = {motor: float(self._state[i, j]) for j, motor in enumerate(self._motors)}
         with self._frame_lock:
             observation.update(self._latest)
         return observation
 
     def send_action(self, action: dict) -> dict:
-        self._action_times.append(time.perf_counter())
-        self._actions.append([float(action[motor]) for motor in self._motors])
         return dict(action)
 
     def disconnect(self) -> None:
@@ -167,10 +157,3 @@ class ReplayRobot(Robot):
         for fd, _ in self._jpegs.values():
             os.close(fd)
         self._connected = False
-        if self.config.log_path:
-            np.savez(
-                self.config.log_path,
-                action_times=np.array(self._action_times),
-                actions=np.array(self._actions, dtype=np.float32).reshape(-1, len(self._motors)),
-                observation_times=np.array(self._observation_times),
-            )

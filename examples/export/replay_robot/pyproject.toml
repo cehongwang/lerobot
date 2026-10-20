@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "lerobot_robot_replay"
 version = "0.1.0"
-description = "A LeRobot robot that replays a recorded SO-101 episode, to run lerobot-rollout without hardware."
+description = "A LeRobot robot that replays recorded episodes, to run lerobot-rollout without hardware."
 requires-python = ">=3.12"
 
 [tool.setuptools]

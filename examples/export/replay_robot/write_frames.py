@@ -14,14 +14,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Write recorded SO-101 episodes as the frames folder the replay robot plays.
+"""Write recorded episodes as the frames folder the replay robot plays.
 
     python examples/export/replay_robot/write_frames.py \
         --dataset.repo_id=<user>/so101_dataset \
         --episodes 0 1 2 3 \
         --output_dir=outputs/replay_frames
 
-The folder holds each camera's frames as JPEG, one file per camera, plus the joint state and names in `index.npz`.
+The folder holds each camera's frames as JPEG, one file per camera, plus the joint state, the joint and camera
+names, and the frame shapes in `index.npz`.
 """
 
 import argparse
@@ -32,15 +33,14 @@ import cv2
 import numpy as np
 
 from lerobot.datasets import LeRobotDataset
-
-CAMERAS = ("wrist", "scene")
+from lerobot.utils.constants import OBS_IMAGES
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("--dataset.repo_id", dest="repo_id", required=True, help="An SO-101 dataset.")
+    parser.add_argument("--dataset.repo_id", dest="repo_id", required=True, help="A recorded dataset.")
     parser.add_argument("--dataset.root", dest="root", type=Path, help="Local folder of the dataset.")
     parser.add_argument("--episodes", type=int, nargs="+", default=[0], help="Episodes to play, in order.")
     parser.add_argument("--output_dir", type=Path, required=True)
@@ -48,17 +48,18 @@ def main() -> None:
 
     dataset = LeRobotDataset(args.repo_id, root=args.root, episodes=args.episodes)
     names = list(dataset.meta.features["observation.state"]["names"])
+    cameras = [key.removeprefix(f"{OBS_IMAGES}.") for key in dataset.meta.camera_keys]
     state = np.zeros((len(dataset), len(names)), dtype=np.float32)
-    offsets = {cam: [0] for cam in CAMERAS}
+    offsets = {cam: [0] for cam in cameras}
     shapes = {}
     args.output_dir.mkdir(parents=True, exist_ok=True)
     with ExitStack() as stack:
-        files = {cam: stack.enter_context(open(args.output_dir / f"{cam}.jpg.bin", "wb")) for cam in CAMERAS}
+        files = {cam: stack.enter_context(open(args.output_dir / f"{cam}.jpg.bin", "wb")) for cam in cameras}
         for i in range(len(dataset)):
             item = dataset[i]
             state[i] = item["observation.state"].numpy()
-            for cam in CAMERAS:
-                rgb = (item[f"observation.images.{cam}"].permute(1, 2, 0).numpy() * 255).round().clip(0, 255)
+            for cam in cameras:
+                rgb = (item[f"{OBS_IMAGES}.{cam}"].permute(1, 2, 0).numpy() * 255).round().clip(0, 255)
                 rgb = cv2.cvtColor(rgb.astype(np.uint8), cv2.COLOR_RGB2BGR)
                 ok, jpeg = cv2.imencode(".jpg", rgb, [cv2.IMWRITE_JPEG_QUALITY, 90])
                 if not ok:
@@ -71,8 +72,9 @@ def main() -> None:
         state=state,
         names=np.array(names),
         fps=dataset.meta.fps,
-        **{f"{cam}_shape": np.array(shapes[cam]) for cam in CAMERAS},
-        **{f"{cam}_offsets": np.array(offsets[cam], dtype=np.int64) for cam in CAMERAS},
+        cameras=np.array(cameras),
+        **{f"{cam}_shape": np.array(shapes[cam]) for cam in cameras},
+        **{f"{cam}_offsets": np.array(offsets[cam], dtype=np.int64) for cam in cameras},
     )
     print(f"Wrote {len(dataset)} frames at {dataset.meta.fps} fps to {args.output_dir}")
 
