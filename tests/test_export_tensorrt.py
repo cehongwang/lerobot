@@ -137,6 +137,20 @@ def test_engines_share_cache_on_device_and_retain_scratch(tmp_path, fake_cuda, f
     assert pointer in fake_cuda.allocations
 
 
+def test_chained_engines_wait_for_the_gpu_only_to_return_the_actions(tmp_path, fake_cuda, fake_engine):
+    """Engines on one stream run in order, so waiting after each one would only stall the CPU."""
+    stream = backend.CudaStream()
+    first = backend.TensorRTEngine(tmp_path / "first.engine", ["x"], ["y"], False, stream)
+    second = backend.TensorRTEngine(tmp_path / "second.engine", ["x"], ["y"], False, stream)
+    synchronize = fake_cuda.cudaStreamSynchronize
+    waits = []
+    fake_cuda.cudaStreamSynchronize = lambda handle: waits.append(handle) or synchronize(handle)
+    hidden = first.run_device(np.arange(3, dtype=np.float32).reshape(1, 3))
+    assert fake_cuda.pending and not waits
+    np.testing.assert_array_equal(second(*hidden), [[0, 4, 8]])
+    assert waits == [stream.handle]
+
+
 def test_engine_synchronizes_copies_after_execution_failure(tmp_path, fake_cuda, fake_engine):
     engine = backend.TensorRTEngine(tmp_path / "model.engine", ["x"], ["y"])
     fake_engine[0].execute_async_v3 = lambda stream: False

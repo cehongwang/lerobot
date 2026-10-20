@@ -45,9 +45,15 @@ def check_cuda(result):
 class CudaStream:
     def __init__(self):
         self.handle = check_cuda(cuda_runtime().cudaStreamCreate())
+        # Host arrays that queued copies may still read, kept alive until the stream next finishes.
+        self._held: list[np.ndarray] = []
+
+    def hold(self, arrays: list[np.ndarray]) -> None:
+        self._held.extend(arrays)
 
     def synchronize(self):
         check_cuda(cuda_runtime().cudaStreamSynchronize(self.handle))
+        self._held.clear()
 
     def __del__(self):
         if getattr(self, "handle", None) is not None:
@@ -160,7 +166,8 @@ def numpy_dtype(dtype):
 class TensorRTEngine:
     """Run a fixed-shape engine; related engines can share a stream and scratch allocation.
 
-    `run_device` keeps the outputs in device buffers, which another engine on the same stream can read.
+    `run_device` queues the work and returns without waiting for it, keeping the outputs in device buffers,
+    which another engine on the same stream can read. Reading them on the host waits for the stream.
     With `cuda_graphs`, the first run records the engine's work in a CUDA graph and later runs replay it,
     so every run must pass the same input buffers.
     """
@@ -259,9 +266,11 @@ class TensorRTEngine:
                 self._replay(tuple(addresses))
             elif not self._context.execute_async_v3(self._stream.handle):
                 raise RuntimeError("TensorRT could not run the engine.")
-        finally:
-            # Input arrays must remain alive until their queued copies finish, including on errors.
+        except BaseException:
+            # Input arrays must remain alive until their queued copies finish.
             self._stream.synchronize()
+            raise
+        self._stream.hold(host_inputs)
         return tuple(self._outputs)
 
     def _input_buffer(self, name: str, shape: tuple[int, ...], dtype) -> CudaBuffer:
