@@ -23,8 +23,9 @@ import numpy as np
 from lerobot.utils.import_utils import require_package
 
 # ExecuTorch returns its own results rather than torch tensors, even where torch is installed, so running
-# a program never imports torch. The bindings read this once, when they first load.
-os.environ.setdefault("EXECUTORCH_PYBINDINGS_TENSOR_OUTPUT", "executorch")
+# a program never imports torch. The bindings read this once, when they first load, and the code below
+# only reads their own results, so a shell setting of "torch" is overridden.
+os.environ["EXECUTORCH_PYBINDINGS_TENSOR_OUTPUT"] = "executorch"
 
 
 class ExecuTorchProgram:

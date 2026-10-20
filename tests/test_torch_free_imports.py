@@ -372,7 +372,12 @@ def test_rollout_runs_an_export_with_torch_unimportable(tmp_path, backend):
     folder = tmp_path / "export"
     folder.mkdir()
     repo = Path(__file__).resolve().parents[1]
-    env = {**os.environ, "PYTHONPATH": os.pathsep.join([str(fake), os.environ.get("PYTHONPATH", "")])}
+    env = {
+        **os.environ,
+        "PYTHONPATH": os.pathsep.join([str(fake), os.environ.get("PYTHONPATH", "")]),
+        # The engine needs ExecuTorch's own results, whatever the shell asks for.
+        "EXECUTORCH_PYBINDINGS_TENSOR_OUTPUT": "torch",
+    }
     result = subprocess.run(
         [sys.executable, "-c", ROLLOUT_WITHOUT_TORCH, str(folder), backend, str(repo)],
         capture_output=True,
