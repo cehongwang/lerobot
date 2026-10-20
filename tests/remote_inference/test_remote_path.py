@@ -95,7 +95,7 @@ def test_busy_admission_releases_connected_hardware_before_propagating(remote_se
         connect=lambda: setattr(teleop, "is_connected", True),
         disconnect=lambda: setattr(teleop, "is_connected", False),
     )
-    monkeypatch.setattr("lerobot.rollout.context.RemoteClient.connect", lambda _: rejected)
+    monkeypatch.setattr("lerobot.remote_inference.RemoteClient.connect", lambda _: rejected)
     monkeypatch.setattr("lerobot.rollout.context.make_robot_from_config", lambda _: robot)
     monkeypatch.setattr("lerobot.rollout.context.make_teleoperator_from_config", lambda _: teleop)
     monkeypatch.setattr("lerobot.rollout.configs.parser.get_path_arg", lambda _: None)
@@ -203,7 +203,7 @@ def test_remote_context_without_weights_dispatches_and_holds_fake_robot(remote_s
         "lerobot.rollout.context._load_pretrained_policy", lambda _: pytest.fail("client loaded weights")
     )
     monkeypatch.setattr(
-        "lerobot.rollout.context.get_policy_class", lambda _: pytest.fail("client instantiated a policy")
+        "lerobot.policies.factory.get_policy_class", lambda _: pytest.fail("client instantiated a policy")
     )
     cfg = RolloutConfig(
         robot=SimpleNamespace(type="test_position_robot"), inference=remote_config, task="pick up the cube"

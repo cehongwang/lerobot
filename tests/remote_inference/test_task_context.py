@@ -44,7 +44,7 @@ def setup(monkeypatch, tmp_path):
         is_connected=True,
         get_observation=lambda: {"a.pos": 0.0, "b.pos": 0.0},
     )
-    monkeypatch.setattr(context.RemoteClient, "connect", lambda _: client)
+    monkeypatch.setattr("lerobot.remote_inference.RemoteClient.connect", lambda _: client)
     make_robot = Mock(return_value=robot)
     monkeypatch.setattr("lerobot.rollout.context.make_robot_from_config", make_robot)
     monkeypatch.setattr(
