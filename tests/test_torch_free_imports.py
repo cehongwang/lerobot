@@ -19,8 +19,10 @@ Each module is imported in a fresh interpreter where torch is installed but refu
 failure's traceback points at the import that pulled torch in.
 """
 
+import os
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -28,7 +30,7 @@ from lerobot.utils.import_utils import _datasets_available
 
 # The spec is still found, so code that only checks whether torch is installed keeps working. Each
 # load attempt is recorded, so an import wrapped in try/except still fails the test.
-IMPORT_WITHOUT_TORCH = """
+BLOCK_TORCH = """
 import importlib
 import importlib.abc
 import importlib.machinery
@@ -54,10 +56,16 @@ class BlockTorch(importlib.abc.MetaPathFinder):
 
 
 sys.meta_path.insert(0, BlockTorch())
+"""
+
+IMPORT_WITHOUT_TORCH = (
+    BLOCK_TORCH
+    + """
 importlib.import_module(sys.argv[1])
 if attempts:
     sys.exit(attempts[0])
 """
+)
 
 
 @pytest.mark.parametrize(
@@ -190,3 +198,186 @@ assert "torch" not in sys.modules
         [sys.executable, "-c", code, str(tmp_path)], capture_output=True, text=True, timeout=300
     )
     assert result.returncode == 0, result.stderr
+
+
+# A stand-in for ExecuTorch, imported from disk the way the real package is, that runs the program on
+# the CPU and records the output type the bindings would have chosen when they loaded.
+FAKE_EXECUTORCH_RUNTIME = """
+import os
+
+import numpy as np
+
+OUTPUT_AT_IMPORT = os.environ.get("EXECUTORCH_PYBINDINGS_TENSOR_OUTPUT")
+
+
+class ExecuTorchResult:
+    dtype_name = "float32"
+
+    def __init__(self, array):
+        self.array, self.shape, self.strides = array, array.shape, array.strides
+
+    @classmethod
+    def from_host(cls, array, device_index=0):
+        return cls(np.array(array))
+
+    def to_host(self):
+        return np.array(self.array)
+
+    def __dlpack_device__(self):
+        return (2, 0)
+
+
+class Method:
+    def execute(self, inputs):
+        assert all(isinstance(value, ExecuTorchResult) for value in inputs), inputs
+        (state,) = (value.array for value in inputs)
+        return [ExecuTorchResult(np.stack([state, 2 * state]))]
+
+
+class Runtime:
+    backend_registry = type("Registry", (), {"set_option": lambda self, backend, options: None})()
+
+    @staticmethod
+    def get():
+        return Runtime()
+
+    def load_program(self, path):
+        return type("Program", (), {"load_method": lambda self, name: Method()})()
+"""
+
+# Runs `lerobot-rollout` itself on a mock robot, with a CPU stand-in for the compiled program.
+ROLLOUT_WITHOUT_TORCH = (
+    BLOCK_TORCH
+    + """
+import ctypes
+import json
+from pathlib import Path
+from types import SimpleNamespace
+
+import numpy as np
+from safetensors.numpy import save_file
+
+folder, backend = Path(sys.argv[1]), sys.argv[2]
+sys.path.insert(0, sys.argv[3])
+state = np.array([1, 2, 3], dtype=np.float32)
+save_file({"observation.state": state, "expected_actions": np.stack([state, 2 * state])}, folder / "case.safetensors")
+(folder / "export.json").write_text(json.dumps({
+    "backend": backend,
+    "programs": {"model": {"file": "model.bin", "inputs": ["observation.state"], "outputs": ["action"]}},
+    "inputs": ["observation.state"],
+    "test_case": "case.safetensors",
+    "tolerance": 0.0,
+}))
+(folder / "config.json").write_text(json.dumps({
+    "type": "act",
+    "input_features": {"observation.state": {"type": "STATE", "shape": [3]}},
+    "output_features": {"action": {"type": "ACTION", "shape": [3]}},
+    "action_feature_names": ["motor_1.pos", "motor_2.pos", "motor_3.pos"],
+}))
+
+if backend == "onnx_trt":
+    from lerobot.inference.export import tensorrt
+
+    memory = []
+
+    def malloc(size):
+        memory.append(ctypes.create_string_buffer(size))
+        return 0, ctypes.addressof(memory[-1])
+
+    def memcpy(dst, src, size, kind, stream):
+        ctypes.memmove(dst, src, size)
+        return (0,)
+
+    def floats(address, count):
+        return np.ctypeslib.as_array((ctypes.c_float * count).from_address(address))
+
+    class Context:
+        addresses = {}
+
+        def set_tensor_address(self, name, address):
+            self.addresses[name] = address
+            return True
+
+        def set_device_memory(self, address, size):
+            pass
+
+        def execute_async_v3(self, stream):
+            x = floats(self.addresses["observation.state"], 3)
+            floats(self.addresses["action"], 6)[:] = np.concatenate([x, 2 * x])
+            return True
+
+    cuda = SimpleNamespace(
+        cudaMalloc=malloc,
+        cudaFree=lambda address: (0,),
+        cudaMemcpyAsync=memcpy,
+        cudaMemcpyKind=SimpleNamespace(cudaMemcpyHostToDevice=1, cudaMemcpyDeviceToHost=2),
+        cudaStreamCreate=lambda: (0, 1),
+        cudaStreamSynchronize=lambda stream: (0,),
+        cudaStreamDestroy=lambda stream: (0,),
+    )
+    engine = SimpleNamespace(
+        create_execution_context=lambda strategy: Context(),
+        get_tensor_shape=lambda name: (3,) if name == "observation.state" else (2, 3),
+        get_tensor_dtype=lambda name: "float",
+        device_memory_size_v2=0,
+    )
+    sys.modules["tensorrt"] = SimpleNamespace(
+        nptype=lambda dtype: np.float32,
+        bfloat16="bfloat16",
+        ExecutionContextAllocationStrategy=SimpleNamespace(STATIC=0, USER_MANAGED=1),
+    )
+    tensorrt.cuda_runtime = lambda: cuda
+    tensorrt.load_engine = lambda path: engine
+
+from tests.mocks.mock_robot import MockRobot
+
+sent = []
+send_action = MockRobot.send_action
+MockRobot.send_action = lambda self, action: sent.append(dict(action)) or send_action(self, action)
+
+from lerobot.scripts import lerobot_rollout
+
+sys.argv = [
+    "lerobot-rollout", f"--policy.path={folder}", "--robot.type=mock_robot", "--robot.random_values=false",
+    "--robot.static_values=[1,2,3]", "--strategy.type=base", "--duration=0.3", "--fps=20",
+]
+lerobot_rollout.main()
+
+if attempts:
+    sys.exit(attempts[0])
+assert "torch" not in sys.modules
+# The first actions the robot gets are the chunk the program computed from its state, one per tick.
+assert sent[:2] == [
+    {"motor_1.pos": 1.0, "motor_2.pos": 2.0, "motor_3.pos": 3.0},
+    {"motor_1.pos": 2.0, "motor_2.pos": 4.0, "motor_3.pos": 6.0},
+], sent[:2]
+if backend == "executorch_trt":
+    import executorch.runtime
+
+    assert executorch.runtime.OUTPUT_AT_IMPORT == "executorch", executorch.runtime.OUTPUT_AT_IMPORT
+"""
+)
+
+
+@pytest.mark.skipif(not _datasets_available, reason="datasets not installed")
+@pytest.mark.parametrize("backend", ["executorch_trt", "onnx_trt"])
+def test_rollout_runs_an_export_with_torch_unimportable(tmp_path, backend):
+    """`lerobot-rollout` loads an ExecuTorch-TensorRT or ONNX-TensorRT folder and drives a robot without torch."""
+    fake = tmp_path / "fake"
+    (fake / "executorch").mkdir(parents=True)
+    (fake / "executorch" / "__init__.py").write_text("")
+    (fake / "executorch" / "runtime.py").write_text(FAKE_EXECUTORCH_RUNTIME)
+    # Like the real package, the TensorRT backend loads ExecuTorch's bindings when it is imported.
+    (fake / "torch_tensorrt_executorch_runtime.py").write_text("import executorch.runtime\n")
+    folder = tmp_path / "export"
+    folder.mkdir()
+    repo = Path(__file__).resolve().parents[1]
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join([str(fake), os.environ.get("PYTHONPATH", "")])}
+    result = subprocess.run(
+        [sys.executable, "-c", ROLLOUT_WITHOUT_TORCH, str(folder), backend, str(repo)],
+        capture_output=True,
+        text=True,
+        timeout=300,
+        env=env,
+    )
+    assert result.returncode == 0, result.stderr[-4000:]
