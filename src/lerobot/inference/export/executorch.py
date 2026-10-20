@@ -39,8 +39,16 @@ class ExecuTorchProgram:
     """
 
     def __init__(self, path: Path, shared_scratch: bool = False):
-        import torch_tensorrt_executorch_runtime  # noqa: F401  # registers the TensorRT backend
-        from executorch.runtime import Runtime
+        try:
+            import torch_tensorrt_executorch_runtime  # noqa: F401  # registers the TensorRT backend
+
+            # ExecuTorchResult arrived with the API this module uses, so an older ExecuTorch fails here.
+            from executorch.runtime import ExecuTorchResult, Runtime  # noqa: F401
+        except ImportError as error:
+            raise ImportError(
+                "An ExecuTorch-TensorRT export needs ExecuTorch 1.6.0.dev20261020 or newer and "
+                f"torch-tensorrt-executorch-runtime built for it; see examples/export/README.md. ({error})"
+            ) from error
 
         runtime = Runtime.get()
         # The programs of a chain run one after another, so they can share one activation scratch.

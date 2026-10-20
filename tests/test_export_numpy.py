@@ -247,6 +247,19 @@ def test_executorch_host_copies_survive_the_next_run(tmp_path, executorch):
     np.testing.assert_array_equal(first, 1.0)
 
 
+@pytest.mark.parametrize("missing", ["old_executorch", "no_backend"])
+def test_executorch_names_the_packages_it_needs(tmp_path, executorch, monkeypatch, missing):
+    """An ExecuTorch from before ExecuTorchResult, or no TensorRT backend, is refused when the folder loads."""
+    if missing == "old_executorch":
+        runtime = sys.modules["executorch.runtime"]
+        monkeypatch.setitem(sys.modules, "executorch.runtime", SimpleNamespace(Runtime=runtime.Runtime))
+    else:
+        monkeypatch.setitem(sys.modules, "torch_tensorrt_executorch_runtime", None)
+    info = chain_info({"model": (["observation.state"], ["action"])}, inputs=["observation.state"])
+    with pytest.raises(ImportError, match="1.6.0.dev20261020 or newer"):
+        load_programs(tmp_path, info)
+
+
 def test_unknown_backends_are_refused(tmp_path):
     with pytest.raises(ValueError, match="Unknown export backend"):
         load_programs(tmp_path, {"backend": "executorch_cuda", "programs": {}})
