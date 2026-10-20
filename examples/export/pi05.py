@@ -169,7 +169,8 @@ class PI05Step(nn.Module):
         past_key_values = DynamicCache(
             tuple((keys, values, None) for keys, values in zip(cache[::2], cache[1::2], strict=True))
         )
-        # In bfloat16 the expert's adaptive norm projections take half the memory, which the Orin Nano needs.
+        # Every matrix multiplication of the step runs in bfloat16. The checkpoint keeps some weights in
+        # float32, such as the expert's adaptive norms, and this halves them, which the Orin Nano needs.
         with torch.autocast("cuda", dtype=torch.bfloat16):
             velocity = self.model.denoise_step(prefix_pad_masks, past_key_values, x_t[None], timestep)
         return x_t + self.dt * velocity[0].float()
