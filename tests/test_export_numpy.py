@@ -25,23 +25,27 @@ import pytest
 from lerobot.inference.export import engine as export_engine
 from lerobot.inference.export.engine import ExportInferenceEngine, ProgramChain, load_programs
 
+# DLPack's device types.
+CPU, CUDA = 1, 2
+
 
 class Result:
     """Stands in for ExecuTorch's own result: device memory with a host copy on request."""
 
-    def __init__(self, array, dtype_name="float32"):
+    def __init__(self, array, dtype_name="float32", device=CUDA):
         self.array, self.shape, self.dtype_name = np.asarray(array), np.shape(array), dtype_name
+        self.device = device
 
     @classmethod
-    def from_host(cls, array):
-        return cls(np.array(array))
+    def from_host(cls, source):
+        return cls(np.array(source.array if isinstance(source, cls) else source))
 
     def to_host(self):
         # Like the bindings, a new host copy that later runs do not overwrite.
         return self.array.copy()
 
     def __dlpack_device__(self):
-        return (2, 0)
+        return (self.device, 0)
 
 
 @pytest.fixture
@@ -51,7 +55,9 @@ def executorch(monkeypatch):
 
     def load(path):
         def execute(inputs):
-            assert all(isinstance(value, Result) for value in inputs), "programs only see device buffers"
+            assert all(isinstance(value, Result) and value.device == CUDA for value in inputs), (
+                "programs only see device buffers"
+            )
             calls.append(path.name)
             return [Result(out) for out in programs[path.name](*(value.array for value in inputs))]
 
@@ -145,6 +151,17 @@ def test_a_whole_policy_is_a_chain_of_one(tmp_path, executorch):
     info = chain_info({"model": (["observation.state"], ["action"])}, inputs=["observation.state"])
     actions = ProgramChain(load_programs(tmp_path, info), info)(np.array([[1.5]], np.float32))
     np.testing.assert_array_equal(actions, [[3.0]])
+
+
+@pytest.mark.parametrize(
+    "make_input", [memoryview, lambda array: Result(array, device=CPU)], ids=["buffer", "host_result"]
+)
+def test_executorch_copies_every_host_input_to_the_gpu(tmp_path, executorch, make_input):
+    """The bindings would hand a CUDA program a host pointer without checking, so nothing host-side passes."""
+    executorch.programs["model.pte"] = lambda state: [2 * state]
+    info = chain_info({"model": (["observation.state"], ["action"])}, inputs=["observation.state"])
+    program = load_programs(tmp_path, info)["model"]
+    np.testing.assert_array_equal(program(make_input(np.ones(2, np.float32))), [2, 2])
 
 
 def test_executorch_programs_of_a_chain_share_one_activation_scratch(tmp_path, executorch):

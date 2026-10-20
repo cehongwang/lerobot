@@ -27,6 +27,9 @@ from lerobot.utils.import_utils import require_package
 # only reads their own results, so a shell setting of "torch" is overridden.
 os.environ["EXECUTORCH_PYBINDINGS_TENSOR_OUTPUT"] = "executorch"
 
+# DLPack's device type for CUDA memory.
+DLPACK_CUDA = 2
+
 
 class ExecuTorchProgram:
     """Run a `.pte` program whose inputs and outputs live on the GPU.
@@ -47,20 +50,24 @@ class ExecuTorchProgram:
         self._method = runtime.load_program(path).load_method("forward")
 
     def run_device(self, *inputs: np.ndarray | Any) -> tuple[Any, ...]:
-        from executorch.runtime import ExecuTorchResult
-
-        # A host array is copied to the GPU; a result already there passes straight through.
-        on_device = [
-            ExecuTorchResult.from_host(np.ascontiguousarray(value))
-            if isinstance(value, np.ndarray)
-            else value
-            for value in inputs
-        ]
-        return tuple(self._method.execute(on_device))
+        return tuple(self._method.execute([on_device(value) for value in inputs]))
 
     def __call__(self, *inputs: np.ndarray | Any) -> np.ndarray | tuple[np.ndarray, ...]:
         outputs = [to_host(value) for value in self.run_device(*inputs)]
         return outputs[0] if len(outputs) == 1 else tuple(outputs)
+
+
+def on_device(value: np.ndarray | Any) -> Any:
+    """`value` in GPU memory: a result already there passes straight through, anything else is copied.
+
+    The bindings hand a CUDA program whatever pointer an input has, so a host input would be read as
+    GPU memory.
+    """
+    from executorch.runtime import ExecuTorchResult
+
+    if not isinstance(value, ExecuTorchResult):
+        return ExecuTorchResult.from_host(np.ascontiguousarray(value))
+    return value if value.__dlpack_device__()[0] == DLPACK_CUDA else ExecuTorchResult.from_host(value)
 
 
 def to_host(result: Any) -> np.ndarray:
