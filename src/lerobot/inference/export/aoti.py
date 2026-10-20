@@ -40,3 +40,6 @@ class AOTInductorPackage:
     def __call__(self, *inputs: np.ndarray | torch.Tensor) -> np.ndarray | tuple[np.ndarray, ...]:
         outputs = [value.cpu().numpy() for value in self.run_device(*inputs)]
         return outputs[0] if len(outputs) == 1 else tuple(outputs)
+
+    def upload(self, value: np.ndarray) -> torch.Tensor:
+        return torch.from_numpy(value).to("cuda")

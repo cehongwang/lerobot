@@ -120,6 +120,27 @@ def test_denoising_steps_run_in_order_and_feed_each_other(tmp_path, executorch):
     assert isinstance(actions, np.ndarray)
 
 
+def test_executorch_copies_the_timesteps_to_the_gpu_once(tmp_path, executorch, monkeypatch):
+    """Each copy to the GPU allocates and frees device memory, which waits for the GPU."""
+    uploads = []
+    from_host = Result.from_host.__func__
+    monkeypatch.setattr(
+        Result,
+        "from_host",
+        classmethod(lambda cls, value: uploads.append(np.shape(value)) or from_host(cls, value)),
+    )
+    executorch.programs.update(
+        {"step.pte": lambda x_t, timestep: [x_t * timestep], "actions.pte": lambda x_t: [x_t]}
+    )
+    names = {"step": (["x_t", "timestep"], ["x_next"]), "actions": (["x_t"], ["action"])}
+    info = chain_info(names, inputs=["noise"], steps=["step"], timesteps=[1.0, 0.5, 0.25])
+    chain = ProgramChain(load_programs(tmp_path, info), info)
+    for _ in range(2):
+        np.testing.assert_allclose(chain(np.ones((2, 3), np.float32)), 0.125)
+    # The three timesteps when the chain loads, then only each chunk's noise.
+    assert uploads == [(1,), (1,), (1,), (2, 3), (2, 3)]
+
+
 def test_a_split_prefix_reads_the_values_its_inputs_name(tmp_path, executorch):
     executorch.programs.update(
         {

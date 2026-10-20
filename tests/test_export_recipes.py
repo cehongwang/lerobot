@@ -56,6 +56,9 @@ class Replay:
         outputs = [value.numpy() for value in self.run_device(*inputs)]
         return outputs[0] if len(outputs) == 1 else tuple(outputs)
 
+    def upload(self, value):
+        return value
+
 
 def export_with_replay(recipe_name, args, monkeypatch):
     """Export through the shared part loop, compiling each part into a `Replay` the engine then loads."""

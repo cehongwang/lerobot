@@ -297,6 +297,11 @@ class TensorRTEngine:
         outputs = [value.numpy(self._stream) for value in self.run_device(*inputs)]
         return outputs[0] if len(outputs) == 1 else tuple(outputs)
 
+    def upload(self, value: np.ndarray) -> np.ndarray:
+        # Each run copies a host input into the engine's own input buffer, which a CUDA graph reads at a
+        # fixed address, so there is nothing to place ahead of time.
+        return value
+
     def __del__(self):
         # Destroy the graph and the context before releasing their bound buffers and shared scratch.
         if getattr(self, "_graph", None) is not None:

@@ -243,6 +243,9 @@ def test_chained_engines_share_scratch_and_keep_the_cache_on_device(tmp_path, mo
         def __call__(self, *inputs):
             return inputs[0]
 
+        def upload(self, value):
+            return value
+
     monkeypatch.setattr(backend, "TensorRTEngine", Engine)
     monkeypatch.setattr(backend, "CudaStream", lambda: "stream")
     monkeypatch.setattr(backend, "CudaBuffer", lambda *a: object())

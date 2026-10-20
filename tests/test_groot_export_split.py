@@ -309,6 +309,9 @@ def test_step_slices_and_program_chain_match_action_head(recipe, alternate, inte
             outputs = [x.numpy() for x in self.run_device(*values)]
             return outputs[0] if len(outputs) == 1 else tuple(outputs)
 
+        def upload(self, value):
+            return value
+
     programs = {f"step_{i}": Program(part, f"step_{i}") for i, part in enumerate(parts)}
     programs["actions"] = Program(recipe.GrootActions(2, 3, action_pipeline()), "actions")
     names = {
@@ -422,6 +425,9 @@ def test_diffusion_parts_export_to_onnx_and_run_as_chain(recipe, monkeypatch, tm
         def __call__(self, *arrays):
             outputs = self.run_device(*arrays)
             return outputs[0] if len(outputs) == 1 else outputs
+
+        def upload(self, value):
+            return value
 
     for part in export.parts():
         if not (part.name.startswith("step_") or part.name == "actions"):

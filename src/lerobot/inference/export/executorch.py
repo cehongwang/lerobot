@@ -56,6 +56,9 @@ class ExecuTorchProgram:
         outputs = [to_host(value) for value in self.run_device(*inputs)]
         return outputs[0] if len(outputs) == 1 else tuple(outputs)
 
+    def upload(self, value: np.ndarray) -> Any:
+        return on_device(value)
+
 
 def on_device(value: np.ndarray | Any) -> Any:
     """`value` in GPU memory: a result already there passes straight through, anything else is copied.

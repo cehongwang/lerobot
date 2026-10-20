@@ -50,6 +50,9 @@ class Program(Protocol):
     def __call__(self, *inputs: Any) -> np.ndarray | tuple[np.ndarray, ...]:
         """The outputs as host arrays."""
 
+    def upload(self, value: np.ndarray) -> Any:
+        """`value` where the program reads its inputs, for many runs to read without another copy."""
+
 
 def export_dir(path: str | Path | None) -> Path | None:
     """The folder an export script wrote, or None when `path` holds a regular policy checkpoint."""
@@ -97,7 +100,11 @@ class ProgramChain:
         self._inputs = {name: program["inputs"] for name, program in info["programs"].items()}
         self._outputs = {name: program["outputs"] for name, program in info["programs"].items()}
         self._steps: list[str] = info.get("steps", [])
-        self._timesteps = [np.array([t], dtype=np.float32) for t in info.get("timesteps", [])]
+        # The same every chunk, so they are placed where the step programs read them once.
+        self._timesteps = [
+            programs[self._steps[0]].upload(np.array([t], dtype=np.float32))
+            for t in info.get("timesteps", [])
+        ]
 
     def __call__(self, *inputs: np.ndarray) -> np.ndarray:
         values: dict[str, Any] = dict(zip(self._names, inputs, strict=True))
