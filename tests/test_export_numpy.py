@@ -37,7 +37,8 @@ class Result:
         return cls(np.array(array))
 
     def to_host(self):
-        return self.array
+        # Like the bindings, a new host copy that later runs do not overwrite.
+        return self.array.copy()
 
     def __dlpack_device__(self):
         return (2, 0)
@@ -187,6 +188,8 @@ def test_executorch_reads_results_in_their_own_layout(dtype, channels_last):
         strides=view.strides,
     )
     host = to_host(result)
+    # The bindings' to_host already made the copy, so reading it copies nothing more.
+    assert np.shares_memory(host, storage)
     assert host.dtype == np.dtype(dtype)
     np.testing.assert_array_equal(host.astype(np.float32), expected.astype(np.float32))
 
