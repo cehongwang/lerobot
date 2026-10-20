@@ -471,7 +471,11 @@ class RolloutConfig:
         if remote:
             return
         if isinstance(self.policy, ExportPolicyConfig):
-            self.device = self.device or self.policy.device
+            if self.device not in (None, self.policy.device):
+                raise ValueError(
+                    f"An exported policy runs on the GPU it was compiled for; drop --device={self.device}."
+                )
+            self.device = self.policy.device
             return
 
         from lerobot.utils.device_utils import auto_select_torch_device, is_torch_device_available

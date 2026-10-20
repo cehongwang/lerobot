@@ -1915,6 +1915,29 @@ def test_rollout_checks_an_export_before_connecting_the_robot(tmp_path, monkeypa
     assert not built
 
 
+@pytest.mark.parametrize("device", [None, "cuda", "cpu", "cuda:1"])
+def test_rollout_refuses_a_device_an_export_cannot_run_on(tmp_path, monkeypatch, device):
+    """The compiled programs run on the GPU they were compiled for, so another --device cannot be honored."""
+    import json
+
+    from lerobot.rollout import RolloutConfig
+    from tests.mocks.mock_robot import MockRobotConfig
+
+    _write_export_folder(tmp_path, [[0, 1, 2], [0, 2, 4]])
+    (tmp_path / "config.json").write_text(json.dumps({"type": "act"}))
+    monkeypatch.setattr(
+        "lerobot.rollout.configs.parser.get_path_arg",
+        lambda name: str(tmp_path) if name == "policy" else None,
+    )
+    monkeypatch.setattr("lerobot.rollout.configs.parser.get_yaml_overrides", lambda name: [])
+    monkeypatch.setattr("lerobot.rollout.configs.parser.get_cli_overrides", lambda name: [])
+    if device in (None, "cuda"):
+        assert RolloutConfig(robot=MockRobotConfig(), device=device).device == "cuda"
+    else:
+        with pytest.raises(ValueError, match="drop --device"):
+            RolloutConfig(robot=MockRobotConfig(), device=device)
+
+
 def test_tensorrt_engine_refuses_an_input_of_another_shape(tmp_path, monkeypatch):
     from lerobot.inference.export.tensorrt import TensorRTEngine
 
