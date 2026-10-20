@@ -19,11 +19,21 @@ git clone --branch export https://github.com/shoumikhin/lerobot.git
 cd lerobot
 uv venv --python 3.12
 source .venv/bin/activate
-uv pip install -e ".[smolvla,pi,groot,feetech,export]" "torch-tensorrt[executorch]" \
+uv pip install -e ".[smolvla,pi,groot,feetech,export]" \
+    torch==2.15.0.dev20261005 torch-tensorrt==2.15.0.dev20261006 "executorch>=1.6.0.dev20261020" \
     --index-url https://download.pytorch.org/whl/nightly/cu132 \
     --extra-index-url https://pypi.org/simple \
     --extra-index-url https://pypi.nvidia.com \
     --index-strategy unsafe-best-match --prerelease allow
+```
+
+This brings TensorRT 11.3.0.99 with Torch-TensorRT. ExecuTorch 1.6.0.dev20261020 is the first nightly with the API the rollout uses to keep values on the GPU.
+
+To run ExecuTorch-TensorRT exports, you also need `torch-tensorrt-executorch-runtime`, Torch-TensorRT's backend for ExecuTorch, built for that ExecuTorch. As of October 20, 2026, no published build of it does, so build it from source. In a clone of [Torch-TensorRT](https://github.com/pytorch/TensorRT), at the last commit that uses TensorRT 11.3, and with [Bazel](https://bazel.build) installed:
+
+```bash
+git checkout 190a72b006
+TORCH_TENSORRT_ALLOW_UNPINNED_EXECUTORCH=1 uv pip install --no-build-isolation --no-deps ./py/torch-tensorrt-executorch-runtime
 ```
 
 ## Export
@@ -86,6 +96,8 @@ lerobot-rollout \
 ```
 
 ## Results
+
+Measured with PyTorch 2.15.0.dev20261005 and TensorRT 11.3.0.99, with Torch-TensorRT and ExecuTorch built from source in mid-October 2026.
 
 Each policy, on each board, compiled each way, next to `torch.compile` and plain PyTorch. The four policies were trained on the same SO-101 dataset (304 episodes at 30 Hz). Bold marks the best value in a row. OOM means it ran out of memory on the 8 GB Orin Nano. Both boards ran at maximum power with locked GPU clocks.
 
