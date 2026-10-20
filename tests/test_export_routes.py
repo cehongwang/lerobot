@@ -39,16 +39,20 @@ def route(monkeypatch):
             "executorch.exir.passes.propagate_device_pass": SimpleNamespace(
                 PropagateDeviceConfig=MagicMock()
             ),
-            "build_engine": SimpleNamespace(build_engine=MagicMock()),
         }
         for module, stub in stubs.items():
             monkeypatch.setitem(sys.modules, module, stub)
+        import build_engine
+
+        monkeypatch.setattr(build_engine, "build_engine", MagicMock())
+        stubs["build_engine"] = build_engine
         monkeypatch.setattr(torch.export, "export", MagicMock())
         monkeypatch.setattr(torch.onnx, "export", MagicMock())
         return runpy.run_path(str(EXAMPLES / f"{name}.py"))["compile_part"], stubs
 
     yield load
     sys.modules.pop("export", None)
+    sys.modules.pop("build_engine", None)
 
 
 def part():
@@ -93,16 +97,13 @@ def test_torch_tensorrt_route_saves_an_aoti_package(route, tmp_path):
 
 @pytest.mark.parametrize("name", ["executorch_trt", "onnx_trt", "torch_trt"])
 def test_routes_compile_with_the_shared_tensorrt_options(route, tmp_path, name):
+    compile_part, stubs = route(name)
     from export import TENSORRT_OPTIONS
 
-    compile_part, stubs = route(name)
     compile_part(part(), tmp_path / "step.bin")
     if name == "onnx_trt":
-        build = stubs["build_engine"].build_engine
-        assert build.call_args.args[2:] == (
-            TENSORRT_OPTIONS["workspace_size"],
-            TENSORRT_OPTIONS["optimization_level"],
-        )
+        assert TENSORRT_OPTIONS["workspace_size"] == stubs["build_engine"].WORKSPACE_BYTES
+        assert TENSORRT_OPTIONS["optimization_level"] == stubs["build_engine"].OPTIMIZATION_LEVEL
     else:
         options = stubs["torch_tensorrt"].dynamo.compile.call_args.kwargs
         assert {key: options[key] for key in TENSORRT_OPTIONS} == TENSORRT_OPTIONS

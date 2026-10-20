@@ -29,8 +29,13 @@ from pathlib import Path
 
 from lerobot.inference.export import ExportInferenceEngine
 
+# TensorRT's default. On the Orin Nano, level 5 built pi0.5's step program, but it did not load.
+OPTIMIZATION_LEVEL = 3
+# Small enough for the builds to fit an 8 GB Jetson Orin Nano beside the rest.
+WORKSPACE_BYTES = 1 << 30
 
-def build_engine(onnx_path: Path, engine_path: Path, workspace_bytes: int, optimization_level: int) -> None:
+
+def build_engine(onnx_path: Path, engine_path: Path) -> None:
     """Build a TensorRT engine that keeps the ONNX file's own dtypes, as the other routes do."""
     import tensorrt as trt
 
@@ -51,8 +56,8 @@ def build_engine(onnx_path: Path, engine_path: Path, workspace_bytes: int, optim
     if not parser.parse_from_file(str(onnx_path)):
         raise SystemExit("\n".join(str(parser.get_error(i)) for i in range(parser.num_errors)))
     config = builder.create_builder_config()
-    config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, workspace_bytes)
-    config.builder_optimization_level = optimization_level
+    config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, WORKSPACE_BYTES)
+    config.builder_optimization_level = OPTIMIZATION_LEVEL
     start = time.perf_counter()
     with engine_path.open("wb") as file:
         if not builder.build_serialized_network_to_stream(network, config, FileWriter(file)):
@@ -61,8 +66,6 @@ def build_engine(onnx_path: Path, engine_path: Path, workspace_bytes: int, optim
 
 
 def main() -> None:
-    from export import TENSORRT_OPTIONS
-
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -73,12 +76,7 @@ def main() -> None:
         raise SystemExit("Only an ONNX-TensorRT folder keeps the ONNX files to rebuild its engines from.")
     for program in info["programs"].values():
         engine = args.folder / program["file"]
-        build_engine(
-            engine.with_suffix(".onnx"),
-            engine,
-            TENSORRT_OPTIONS["workspace_size"],
-            TENSORRT_OPTIONS["optimization_level"],
-        )
+        build_engine(engine.with_suffix(".onnx"), engine)
     # The rollout's own startup check: the engines must reproduce the test case.
     ExportInferenceEngine(args.folder, task=info.get("task", ""))
     print(f"{args.folder} reproduces its test case")

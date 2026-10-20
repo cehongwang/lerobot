@@ -34,6 +34,7 @@ from typing import Any
 
 import numpy as np
 import torch
+from build_engine import OPTIMIZATION_LEVEL, WORKSPACE_BYTES
 from safetensors.numpy import save_file
 from torch import Tensor, nn
 
@@ -58,9 +59,8 @@ TENSORRT_OPTIONS = {
     "truncate_double": True,
     # On a Jetson the CPU and GPU share memory: CPU memory can swap during the build, GPU memory cannot.
     "offload_module_to_cpu": True,
-    # TensorRT's default. On the Orin Nano, level 5 built pi0.5's step program, but it did not load.
-    "optimization_level": 3,
-    "workspace_size": 1 << 30,
+    "optimization_level": OPTIMIZATION_LEVEL,
+    "workspace_size": WORKSPACE_BYTES,
 }
 
 

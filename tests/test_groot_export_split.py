@@ -435,7 +435,7 @@ def test_diffusion_parts_export_to_onnx_and_run_as_chain(recipe, monkeypatch, tm
     )
     sessions = {}
 
-    def check_engine(onnx_path, engine_path, workspace_bytes, optimization_level):
+    def check_engine(onnx_path, engine_path):
         onnx.checker.check_model(onnx.load(onnx_path), full_check=True)
         sessions[engine_path.stem] = onnxruntime.InferenceSession(
             str(onnx_path), providers=["CPUExecutionProvider"]

@@ -28,7 +28,7 @@ from pathlib import Path
 
 import torch
 from build_engine import build_engine
-from export import TENSORRT_OPTIONS, Part, export, free_memory, parse_args
+from export import Part, export, free_memory, parse_args
 
 
 def compile_part(part: Part, path: Path) -> None:
@@ -45,7 +45,7 @@ def compile_part(part: Part, path: Path) -> None:
     # As offload_module_to_cpu does on the other routes: CPU memory can swap during the build; GPU memory cannot.
     part.module.cpu()
     free_memory()
-    build_engine(onnx_path, path, TENSORRT_OPTIONS["workspace_size"], TENSORRT_OPTIONS["optimization_level"])
+    build_engine(onnx_path, path)
 
 
 if __name__ == "__main__":

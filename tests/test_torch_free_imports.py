@@ -437,3 +437,41 @@ def test_rollout_runs_an_export_with_torch_unimportable(tmp_path, backend, plann
     repo = Path(__file__).resolve().parents[1]
     result = run_without_torch(ROLLOUT_WITHOUT_TORCH, tmp_path, backend, str(repo), planner)
     assert result.returncode == 0, result.stderr[-4000:]
+
+
+# Rebuilds an ONNX-TensorRT folder's engines, with TensorRT and the startup check replaced by stand-ins.
+REBUILD_WITHOUT_TORCH = (
+    BLOCK_TORCH
+    + """
+import json
+from pathlib import Path
+
+folder = Path(sys.argv[1])
+sys.path.insert(0, sys.argv[2])
+(folder / "export.json").write_text(json.dumps({
+    "backend": "onnx_trt", "programs": {"model": {"file": "model.engine", "inputs": [], "outputs": []}}
+}))
+import build_engine
+
+built = []
+build_engine.build_engine = lambda onnx_path, engine_path, *options: built.append(engine_path.name)
+build_engine.ExportInferenceEngine = lambda folder, task: None
+sys.argv = ["build_engine.py", str(folder)]
+build_engine.main()
+if attempts:
+    sys.exit(attempts[0])
+assert built == ["model.engine"], built
+"""
+)
+
+
+def test_engines_rebuild_on_another_board_without_torch(tmp_path):
+    """Moving an ONNX-TensorRT folder to another board needs TensorRT, not PyTorch."""
+    examples = Path(__file__).resolve().parents[1] / "examples" / "export"
+    result = subprocess.run(
+        [sys.executable, "-c", REBUILD_WITHOUT_TORCH, str(tmp_path), str(examples)],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert result.returncode == 0, result.stderr[-4000:]
