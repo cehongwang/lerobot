@@ -131,6 +131,38 @@ def test_help_lists_the_route_and_recipe_arguments(tmp_path, monkeypatch, capsys
         assert "--tolerance" in text and "--dataset.repo_id" in text and "--task" in text
 
 
+def test_export_refuses_a_part_the_recipe_does_not_build(tmp_path, monkeypatch):
+    """A recipe whose part names and parts disagree would otherwise write a folder with nothing compiled."""
+    monkeypatch.syspath_prepend(str(EXAMPLES))
+    import export
+
+    sys.modules.pop("export", None)
+
+    class Recipe:
+        __name__ = "recipe"
+
+        @staticmethod
+        def part_names(args):
+            return ["a", "b"]
+
+        class Export:
+            def __init__(self, args):
+                pass
+
+            def parts(self):
+                for name in ("a", "b_misnamed"):
+                    yield export.Part(name, torch.nn.Identity(), (torch.zeros(1),), ["x"], ["y"])
+
+            def write(self, programs, args):
+                raise AssertionError("nothing was compiled")
+
+    compiled = []
+    args = SimpleNamespace(part="b", output_dir=tmp_path, route="onnx_trt")
+    with pytest.raises(SystemExit, match="'b'"):
+        export.export("unused", args, Recipe, lambda part, path: compiled.append(part.name), ".engine")
+    assert not compiled
+
+
 def test_route_scripts_name_no_policy():
     for name in ("executorch_trt", "onnx_trt", "torch_trt"):
         code = (EXAMPLES / f"{name}.py").read_text().split('"""', 2)[2]
