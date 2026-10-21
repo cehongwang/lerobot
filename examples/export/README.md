@@ -51,6 +51,8 @@ Some policies need more arguments:
 
 pi0.5 and GR00T are too large to compile in one piece on a small board, so the scripts build them as a chain of smaller programs, one at a time.
 
+With `--one_process`, `executorch_trt.py` builds every part in one process instead. For pi0.5 it also makes the whole prefix one program, split into TensorRT engines of at most 512 MiB of weights each, and compiles the prefix and the step on the CPU from the checkpoint's weights, mapped from the file. It needs Torch-TensorRT with `release_weights_after_build`, `engine_output_dir`, `resource_partition_engine_cap` and `map_weights` (the branch `cehongw/pi05-low-memory-repro` of pytorch/TensorRT). The weights are mapped only from a checkpoint that holds them as `--one_process` loads them: write one once with `python examples/export/pi05_mapping_file.py --policy.path=<checkpoint> --output=<folder>/model.safetensors` and export from that folder, or the weights are copied to the CPU instead. On a Jetson AGX Thor this export peaked at 6.7 GB (11.8 GB as a chain) and ran in 252 s (394 s).
+
 To run an ONNX-TensorRT export on another board, copy the folder there and rebuild its engines with `python examples/export/build_engine.py <folder>`.
 
 ## Run

@@ -26,6 +26,7 @@ import datetime as dt
 import gc
 import importlib
 import json
+import shutil
 import subprocess
 import sys
 from collections.abc import Callable
@@ -75,6 +76,10 @@ class Part:
     inputs: tuple[Tensor, ...]
     input_names: list[str]
     output_names: list[str]
+    # Extra torch_tensorrt.dynamo.compile options for this part, such as a per-engine weight cap.
+    compile_options: dict[str, Any] = dataclasses.field(default_factory=dict)
+    # Whether the ExecuTorch-TensorRT program replays its engine from a CUDA graph.
+    cuda_graphs: bool = True
 
 
 def parse_args(description: str, route: str) -> tuple[argparse.Namespace, Any]:
@@ -87,6 +92,12 @@ def parse_args(description: str, route: str) -> tuple[argparse.Namespace, Any]:
         "--output_dir", type=Path, help="Folder to write. Default: a new one under outputs/export."
     )
     parser.add_argument("--part", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--one_process",
+        action="store_true",
+        help="Build every part in this process, releasing each weight once its engine is built "
+        "(Torch-TensorRT with release_weights_after_build and engine_output_dir).",
+    )
     # The checkpoint names the recipe, which adds its own arguments, so it is read before help is shown.
     checkpoint = argparse.ArgumentParser(add_help=False)
     checkpoint.add_argument("--policy.path", dest="policy_path")
@@ -126,6 +137,9 @@ def export(
     until it exits. That process runs the parts before its own in PyTorch to make its example inputs.
     """
     names = recipe.part_names(args)
+    if args.one_process:
+        export_in_one_process(args, recipe, compile_part, suffix)
+        return
     if args.part is None:
         args.output_dir = make_output_dir(args.output_dir, f"{recipe.__name__}_{args.route}")
         if len(names) > 1:
@@ -160,6 +174,40 @@ def export(
         raise SystemExit(f"The recipe built no part named {args.part!r}; its parts are {list(programs)}.")
     if args.part == names[-1]:
         exporter.write(programs, args)
+
+
+def export_in_one_process(
+    args: argparse.Namespace, recipe: Any, compile_part: Callable[[Part, Path], None], suffix: str
+) -> None:
+    """Compile every part in this process, one after another.
+
+    Torch-TensorRT releases each weight once its last engine is built and keeps each built engine in a
+    file until the save streams it into the program, so a built part leaves nothing behind.
+    """
+    args.output_dir = make_output_dir(args.output_dir, f"{recipe.__name__}_{args.route}")
+    exporter = recipe.Export(args)
+    programs = {}
+    for part in exporter.parts():
+        programs[part.name] = {
+            "file": f"{part.name}{suffix}",
+            "inputs": part.input_names,
+            "outputs": part.output_names,
+        }
+        engines = args.output_dir / f".{part.name}_engines"
+        part.compile_options = {
+            "release_weights_after_build": True,
+            "engine_output_dir": str(engines),
+            # The part's weights stay where its PyTorch run left them: moving them to the CPU would
+            # hold a second copy until the move finishes, and each is released once its engine is built.
+            "offload_module_to_cpu": False,
+            **part.compile_options,
+        }
+        print(f"Compiling {part.name}", flush=True)
+        compile_part(part, args.output_dir / programs[part.name]["file"])
+        shutil.rmtree(engines, ignore_errors=True)  # the program holds the engines now
+        del part
+        free_memory()
+    exporter.write(programs, args)
 
 
 def write_folder(
@@ -206,10 +254,10 @@ def device() -> torch.device:
 
 
 def processors(
-    config: PreTrainedConfig, policy_path: str
+    config: PreTrainedConfig, policy_path: str, device_type: str | None = None
 ) -> tuple[PolicyProcessorPipeline, PolicyProcessorPipeline]:
-    """The checkpoint's saved processors with every step on this machine's device."""
-    overrides = {"device_processor": {"device": str(device())}}
+    """The checkpoint's saved processors with every step on `device_type`, by default this machine's device."""
+    overrides = {"device_processor": {"device": device_type or str(device())}}
     return make_pre_post_processors(
         config,
         pretrained_path=policy_path,

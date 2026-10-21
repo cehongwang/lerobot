@@ -36,7 +36,9 @@ from export import TENSORRT_OPTIONS, Part, export, parse_args
 def compile_part(part: Part, path: Path) -> None:
     with torch.no_grad():
         program = torch.export.export(part.module, part.inputs)
-    engine = torch_tensorrt.dynamo.compile(program, arg_inputs=part.inputs, **TENSORRT_OPTIONS)
+    engine = torch_tensorrt.dynamo.compile(
+        program, arg_inputs=part.inputs, **{**TENSORRT_OPTIONS, **part.compile_options}
+    )
     del program
     torch_tensorrt.save(
         engine,
@@ -44,7 +46,7 @@ def compile_part(part: Part, path: Path) -> None:
         output_format="executorch",
         arg_inputs=part.inputs,
         retrace=False,
-        use_cuda_graphs=True,
+        use_cuda_graphs=part.cuda_graphs,
         backend_config=ExecutorchBackendConfig(
             # The rollout hands each program its inputs, and takes its outputs, on the GPU.
             propagate_device_config=PropagateDeviceConfig(

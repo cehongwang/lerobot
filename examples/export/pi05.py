@@ -27,7 +27,7 @@ export it.
 
 import argparse
 import math
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 from copy import copy
 
 import torch
@@ -78,6 +78,13 @@ STEP_MODULES = (
 )
 # The most language model layers whose TensorRT build fits an 8 GB Jetson Orin Nano beside the rest.
 LAYERS_PER_PROGRAM = 3
+# The preprocessor steps that build the prompt, which StatePrompt does inside the program instead.
+STATE_STEPS = Pi05PrepareStateTokenizerProcessorStep | TokenizerProcessorStep
+# The prefix's padding mask and its KV cache by name, which the step program reads.
+PrefixCache = tuple[Tensor, dict[str, Tensor]]
+# With --one_process the whole prefix is one program, split into TensorRT engines of at most this many
+# weight bytes, so each build still fits an 8 GB Jetson Orin Nano.
+PREFIX_ENGINE_CAP = 1 << 29
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
@@ -86,6 +93,8 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def part_names(args: argparse.Namespace) -> list[str]:
+    if args.one_process:
+        return ["prefix", "step", "actions"]
     depth = get_gemma_config(PreTrainedConfig.from_pretrained(args.policy_path).paligemma_variant).depth
     groups = range(math.ceil(depth / LAYERS_PER_PROGRAM))
     return ["embed", *(f"language_model_{group}" for group in groups), "step", "actions"]
@@ -171,7 +180,7 @@ class PI05Step(nn.Module):
         )
         # Every matrix multiplication of the step runs in bfloat16. The checkpoint keeps some weights in
         # float32, such as the expert's adaptive norms, and this halves them, which the Orin Nano needs.
-        with torch.autocast("cuda", dtype=torch.bfloat16):
+        with torch.autocast(x_t.device.type, dtype=torch.bfloat16):
             velocity = self.model.denoise_step(prefix_pad_masks, past_key_values, x_t[None], timestep)
         return x_t + self.dt * velocity[0].float()
 
@@ -187,9 +196,13 @@ class PI05Embed(nn.Module):
     def forward(self, *observation: Tensor) -> tuple[Tensor, Tensor]:
         batch = self.preprocessor(*observation)
         images, img_masks = self.policy._preprocess_images(batch)
-        prefix_embs, prefix_pad_masks, _ = self.policy.model.embed_prefix(
-            images, img_masks, batch[OBS_LANGUAGE_TOKENS], batch[OBS_LANGUAGE_ATTENTION_MASK]
-        )
+        # A CPU export runs the vision tower in bfloat16 too: `_vision_autocast` only covers CUDA.
+        on_cpu = observation[0].device.type == "cpu"
+        bfloat16 = self.policy.model.paligemma_with_expert.precision == torch.bfloat16
+        with torch.autocast("cpu", dtype=torch.bfloat16, enabled=on_cpu and bfloat16):
+            prefix_embs, prefix_pad_masks, _ = self.policy.model.embed_prefix(
+                images, img_masks, batch[OBS_LANGUAGE_TOKENS], batch[OBS_LANGUAGE_ATTENTION_MASK]
+            )
         return prefix_embs, prefix_pad_masks
 
 
@@ -231,6 +244,47 @@ class PI05LanguageModelLayers(nn.Module):
         return keys_values if self.last else (hidden_states, *keys_values)
 
 
+def map_to_cpu(module: nn.Module, model_file: str, prefix: str = "") -> None:
+    """Point `module`'s weights at the checkpoint file's pages, module by module, where the dtypes match.
+
+    The file is the policy's weights as loaded (`save_weights_for_mapping`); a weight it holds in another
+    dtype is copied to the CPU instead.
+    """
+    from torch_tensorrt.dynamo.tools import map_weights
+
+    copied = 0
+    for name, sub in module.named_modules():
+        tensors = [*sub.parameters(recurse=False), *sub.buffers(recurse=False)]
+        if not tensors:
+            continue
+        try:
+            map_weights(sub, model_file, prefix=f"{prefix}{name}." if name else prefix)
+        except ValueError:
+            copied += sum(t.numel() * t.element_size() for t in tensors)
+    module.cpu()
+    if copied:
+        print(f"Copied {copied / 2**20:.0f} MiB of weights the checkpoint holds in another dtype", flush=True)
+
+
+class PI05Prefix(nn.Module):
+    """The chain's prefix parts as one program: the raw frame in, the padding mask and every KV cache out."""
+
+    def __init__(self, embed: PI05Embed, groups: list[PI05LanguageModelLayers]):
+        super().__init__()
+        self.embed = embed
+        self.groups = nn.ModuleList(groups)
+
+    def forward(self, *observation: Tensor) -> tuple[Tensor, ...]:
+        hidden, prefix_pad_masks = self.embed(*observation)
+        cache = []
+        for group in self.groups:
+            outputs = group(hidden, prefix_pad_masks)
+            if not group.last:
+                hidden, *outputs = outputs
+            cache.extend(outputs)
+        return (prefix_pad_masks, *cache)
+
+
 class CompactEmbedding(nn.Module):
     """An embedding that keeps only the rows of `token_ids`, and finds them with a constant table."""
 
@@ -257,6 +311,10 @@ class Export:
         self.config.device = str(device())
         self.model_file = cached_file(args.policy_path, "model.safetensors")
         self.policy = self.load_part(*EMBED_MODULES)
+        if args.one_process:
+            # The vision tower runs in bfloat16 under autocast anyway; holding it in bfloat16 halves the
+            # weights the CPU build maps, and the build makes no bfloat16 copies of float32 ones.
+            self.policy.model.paligemma_with_expert.paligemma.model.vision_tower.to(torch.bfloat16)
         config = self.policy.config
         if config.use_visual_memory or config.use_proprioceptive_memory:
             raise SystemExit("A pi0.5 policy with observation memory cannot be exported.")
@@ -264,9 +322,8 @@ class Export:
         tokenizer = next(s for s in preprocessor.steps if isinstance(s, TokenizerProcessorStep))
         # The prompt carries the state, so its length can change every step; the program takes one shape.
         tokenizer.padding = "max_length"
-        state_steps = Pi05PrepareStateTokenizerProcessorStep | TokenizerProcessorStep
         tensor_steps = PolicyProcessorPipeline(
-            steps=[s for s in preprocessor.steps if not isinstance(s, state_steps)]
+            steps=[s for s in preprocessor.steps if not isinstance(s, STATE_STEPS)]
         )
         # pi0.5 fills in its empty cameras itself, so the robot does not send them.
         empty_cameras = {f"{OBS_IMAGES}.empty_camera_{i}" for i in range(config.empty_cameras)}
@@ -301,6 +358,85 @@ class Export:
         The test case's actions are these parts chained, the denoising step once per step.
         """
         frame = tuple(torch.from_numpy(x).to(device()) for x in self.frame.values())
+        parts = self.prefix_part if self.args.one_process else self.prefix_chain
+        prefix_pad_masks, cache = yield from parts(frame)
+        free_memory()
+        step = PI05Step(self.load_part(*STEP_MODULES).model, self.dt)
+        cache_inputs = (prefix_pad_masks, *cache.values())
+        x_t = self.noise
+        with torch.no_grad():
+            for timestep in self.timesteps:
+                x_t = step(*cache_inputs, x_t, torch.tensor([timestep], device=device()))
+        step_inputs = (*cache_inputs, self.noise, torch.ones(1, device=device()))
+        if self.args.one_process:  # compiled on the CPU from the checkpoint's pages, as the prefix is
+            map_to_cpu(step, self.model_file)
+            step_inputs = tuple(x.cpu() for x in step_inputs)
+        yield Part("step", step, step_inputs, ["prefix_pad_masks", *cache, "x_t", "timestep"], ["x_next"])
+        del step
+        free_memory()
+        actions = ChunkActions(
+            self.config.n_action_steps, self.config.output_features[ACTION].shape[0], self.postprocessor
+        )
+        state = torch.from_numpy(self.frame[OBS_STATE]).to(device())
+        with torch.no_grad():
+            self.expected_actions = actions(x_t, state).cpu().numpy()
+        yield actions.part(self.noise, state)
+
+    def prefix_part(self, frame: tuple[Tensor, ...]) -> Generator[Part, None, PrefixCache]:
+        """The prefix as one program, compiled on the CPU from the checkpoint's weights mapped from the file.
+
+        The chain's parts still run in PyTorch on the GPU one at a time, for the test case and the step's
+        inputs. Each part's weights are then mapped from the checkpoint onto the CPU, so the build reads
+        file pages, which it releases engine by engine, rather than weights held in memory. Mapping needs a
+        checkpoint holding the weights as the policy loads them (`save_weights_for_mapping` writes one);
+        from any other checkpoint the weights are copied to the CPU instead.
+        """
+        parts = []
+        chain = self.prefix_chain(frame)
+        while True:
+            try:
+                part = next(chain)
+            except StopIteration as done:
+                prefix_pad_masks, cache = done.value
+                break
+            self.move_to_cpu(part)
+            parts.append(part.module)
+            del part
+            free_memory()
+        embed, *groups = parts
+        embed.preprocessor = PI05Observation(
+            list(self.frame), self.tensor_steps("cpu"), embed.preprocessor.prompt
+        )
+        yield Part(
+            "prefix",
+            PI05Prefix(embed, groups),
+            tuple(x.cpu() for x in frame),
+            list(self.frame),
+            ["prefix_pad_masks", *cache],
+            {"enable_resource_partitioning": True, "resource_partition_engine_cap": PREFIX_ENGINE_CAP},
+            # On the Thor, graphs made this program of 8 engines 6 ms slower per chunk, and held 640 MiB more.
+            cuda_graphs=False,
+        )
+        return prefix_pad_masks, cache
+
+    def move_to_cpu(self, part: Part) -> None:
+        """Map the part's weights from the checkpoint onto the CPU; copy those it holds in another dtype."""
+        if part.name == "embed":
+            map_to_cpu(part.module.policy, self.model_file)
+        else:
+            for layer in part.module.layers:
+                map_to_cpu(layer, self.model_file, f"{LANGUAGE_MODEL}.layers.{layer.self_attn.layer_idx}.")
+        part.module.cpu()  # what the checkpoint doesn't hold: the compact embedding, the prompt, rotary tables
+
+    def tensor_steps(self, device_type: str) -> PolicyProcessorPipeline:
+        """The preprocessor's steps that run inside the program, on `device_type`."""
+        preprocessor, _ = processors(self.config, self.args.policy_path, device_type)
+        return PolicyProcessorPipeline(
+            steps=[s for s in preprocessor.steps if not isinstance(s, STATE_STEPS)]
+        )
+
+    def prefix_chain(self, frame: tuple[Tensor, ...]) -> Generator[Part, None, PrefixCache]:
+        """The prefix as a chain of parts: the embedding, then LAYERS_PER_PROGRAM layers at a time."""
         embed = PI05Embed(self.policy, self.observation)
         del self.policy
         with torch.no_grad():
@@ -327,24 +463,7 @@ class Export:
             yield Part(f"language_model_{group}", module, inputs, [hidden_name, "prefix_pad_masks"], outputs)
             del module
             hidden_name = outputs[0]
-        free_memory()
-        step = PI05Step(self.load_part(*STEP_MODULES).model, self.dt)
-        cache_inputs = (prefix_pad_masks, *cache.values())
-        x_t = self.noise
-        with torch.no_grad():
-            for timestep in self.timesteps:
-                x_t = step(*cache_inputs, x_t, torch.tensor([timestep], device=device()))
-        step_inputs = (*cache_inputs, self.noise, torch.ones(1, device=device()))
-        yield Part("step", step, step_inputs, ["prefix_pad_masks", *cache, "x_t", "timestep"], ["x_next"])
-        del step
-        free_memory()
-        actions = ChunkActions(
-            self.config.n_action_steps, self.config.output_features[ACTION].shape[0], self.postprocessor
-        )
-        state = torch.from_numpy(self.frame[OBS_STATE]).to(device())
-        with torch.no_grad():
-            self.expected_actions = actions(x_t, state).cpu().numpy()
-        yield actions.part(self.noise, state)
+        return prefix_pad_masks, cache
 
     def write(self, programs: dict[str, dict], args: argparse.Namespace) -> None:
         write_folder(
