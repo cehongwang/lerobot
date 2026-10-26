@@ -46,19 +46,40 @@ def latency_ms(fn, warmup=10, runs=50):
     return lat[len(lat) // 2], lat[int(len(lat) * 0.9)]
 
 
-def dump_weights(export: PI05Export, path: str) -> None:
-    """DUMP_WEIGHTS (one-time, its own process): the policy's weights as loaded and cast, one entry per
-    storage, keyed by parameter name, so MMAP_WEIGHTS can map them in the dtypes the model uses."""
-    from safetensors.torch import save_file
+def dump_weights(policy_path: str, task: str, path: str) -> None:
+    """DUMP_WEIGHTS (one-time, its own process): the policy's weights as PI05Export leaves them (bfloat16
+    storage, the task's compact token embedding), keyed by parameter name, so MMAP_WEIGHTS can map them in
+    the dtypes the model uses. The policy loads on the CPU, since nothing here runs it; only the prompt's
+    tokenizer steps touch the GPU. The file is written one tensor at a time, so the process holds the
+    policy once and no copy of the file."""
+    from types import SimpleNamespace
 
-    tensors, seen = {}, set()
-    for name, t in [*export.policy.named_parameters(remove_duplicate=False),
-                    *export.policy.named_buffers(remove_duplicate=False)]:
-        if t.untyped_storage().data_ptr() not in seen:
-            seen.add(t.untyped_storage().data_ptr())
-            tensors[name] = t.detach().contiguous().cpu()
-    save_file(tensors, path)
-    print(f"dumped {sum(t.nbytes for t in tensors.values()) / 2**30:.2f} GiB of weights to {path}", flush=True)
+    import pi05_recipe
+
+    from lerobot.configs.policies import PreTrainedConfig
+    from lerobot.policies.pi05.modeling_pi05 import PI05Policy
+    from lerobot.processor import PolicyProcessorPipeline, TokenizerProcessorStep
+    from lerobot.utils.constants import OBS_STATE
+    from torch_tensorrt.dynamo.tools import save_weights_for_mapping
+
+    config = PreTrainedConfig.from_pretrained(policy_path)
+    config.device = "cpu"
+    policy = PI05Policy.from_pretrained(policy_path, config=config).eval()
+    rss_anon("loading the policy on the CPU")
+    # What PI05Export.__init__ does to the policy after its eager reference run.
+    pi05_recipe.store_in_bfloat16(policy)
+    export = SimpleNamespace(policy=policy, policy_path=policy_path, task=task,
+                             frame={OBS_STATE: np.zeros(policy.config.input_features[OBS_STATE].shape)})
+    preprocessor, _ = pi05_recipe.PI05Export.processors(export)
+    tokenizer = next(i for i, s in enumerate(preprocessor.steps) if isinstance(s, TokenizerProcessorStep))
+    export.text_steps = PolicyProcessorPipeline(steps=preprocessor.steps[: tokenizer + 1])
+    language_model = policy.model.paligemma_with_expert.paligemma.model.language_model
+    language_model.embed_tokens = pi05_recipe.CompactEmbedding(
+        language_model.embed_tokens, pi05_recipe.PI05Export.prompt_token_ids(export))
+    rss_anon("bfloat16 storage and the compact embedding")
+    save_weights_for_mapping(policy, path)
+    rss_anon("writing the weights")
+    print(f"dumped the weights to {path} ({os.path.getsize(path) / 2**30:.2f} GiB)", flush=True)
 
 
 def map_weights(export: PI05Export, path: str) -> None:
@@ -417,13 +438,13 @@ def main() -> None:
     rss_anon("imports")
     if os.environ.get("REF_CACHE"):
         use_reference_cache(os.environ["REF_CACHE"])
+    if os.environ.get("DUMP_WEIGHTS"):
+        dump_weights(args.policy_path, args.task, os.environ["DUMP_WEIGHTS"])
+        return
     if os.environ.get("META_LOAD") == "1":
         meta_load()
     export = PI05Export(args.policy_path, args.task, args.output_dir, args.job_name)
     rss_anon("PI05Export (load, eager reference, bf16 storage)")
-    if os.environ.get("DUMP_WEIGHTS"):
-        dump_weights(export, os.environ["DUMP_WEIGHTS"])
-        return
     if os.environ.get("REF_SAVE") == "1":
         np.savez(os.environ["REF_CACHE"], actions=np.asarray(export.expected_actions),
                  noise_sum=float(export.noise.sum()),

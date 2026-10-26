@@ -61,11 +61,13 @@ as inputs.
 
 ## 2. The weights dump (once)
 
-The export maps the policy's weights, as loaded, from one bf16 file. Write that file once. This step
-loads the policy the usual way, onto the GPU. Measured on an A40, it peaked at 15.1 GB of host RSS,
-partly pages of the 14.5 GB float32 checkpoint the kernel can reclaim, and 9.5 GB of GPU memory. Run it
-on the Thor itself, or on any machine with at least 16 GB of RAM and a CUDA GPU with 10 GB. An 8 GB Orin
-Nano can't run it.
+The export maps the policy's weights from one bf16 file, which this step writes once. The file holds
+them as the export's model holds them: in bfloat16, with the task's compact token embedding. The step
+loads the policy on the CPU and writes the file one tensor at a time. Measured, it held at most
+9.3 GiB, because lerobot loads the vision tower in float32 before it is stored in bfloat16. Add the pages
+of the 14.5 GB float32 checkpoint it reads, which the kernel can reclaim. On the GPU it used 0.3 GB,
+for the prompt's tokenizer steps. Run it on the Thor itself or on any machine with about 12 GB of free
+RAM. An 8 GB Orin Nano can't run it.
 
 The policy folder needs `config.json`, `policy_preprocessor.json`, `policy_postprocessor.json` and
 `model.safetensors`:
@@ -76,7 +78,7 @@ PYTHONPATH=src:examples/export:$TORCH_TENSORRT_PY:$H DUMP_WEIGHTS=pi05_dump.safe
   REF_CACHE=$H/pi05_ref.npz UNROLLED=1 \
   python $H/run_anthony.py $H/anth_step_export.py --policy.path=<pi05_base folder> \
   "--task=pick up the red block" --output_dir=/tmp/pi05_dump_run
-# prints "dumped 6.74 GiB of weights to pi05_dump.safetensors" (7,241,148,522 bytes)
+# prints "dumped the weights to pi05_dump.safetensors (6.74 GiB)"
 ```
 
 Copy the file to the board's disk, not to tmpfs: a tmpfs copy would hold its 6.8 GB in RAM.
