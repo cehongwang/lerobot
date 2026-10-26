@@ -15,7 +15,9 @@ Measured on a Jetson AGX Thor. Memory is system used memory plus GPU memory abov
 | | Export time | Export peak | Run-time memory | Time per chunk |
 |---|---:|---:|---:|---:|
 | `pi05_executorch_tensorrt.py` as a chain of 9 processes (commit `128f2660`) | 394 s | 11,752 MiB | 6,124 MiB | 125.9 ms |
-| **This folder** | RESULT_TIME | **RESULT_PEAK** | RESULT_RUNTIME | RESULT_LATENCY |
+| **This folder** | 233 s | **4,983 MiB** (812 MiB GPU) | 5,908 MiB | 117.9 ms |
+
+The largest action error against the PyTorch test case is 0.029; the rollout's tolerance is 5.
 
 Every technique and its measured effect is in `docs/pi05_export_memory.md` section 2.1 of
 `cehongwang/lerobot_project`. The weights are memory-mapped from a bf16 dump, and the policy is built on the
