@@ -132,6 +132,32 @@ python examples/export/pi05_low_memory/chunk_bench.py ours <output folder>
 # [result] ours: median of 3 x 100 chunks ... ms, max action error vs test case ...
 ```
 
+## On a Jetson Orin Nano 8 GB (not run yet)
+
+The same steps should apply on JetPack 7.2 or later. JetPack 7.2 added the Orin to the CUDA 13 stack that
+the Thor runs. JetPack 6 can't run them: it has CUDA 12.6, and its torch wheels stop at 2.8.
+
+- **The wheels:** the torch and executorch builds above have `sm_80` kernels, which run on the Orin's
+  `sm_87`; torch warns that no build supports the GPU. `libnvinfer.so.11` in the TensorRT 11.4 wheel has
+  `sm_87` kernels, but the wheel has no `sm_87` builder resource file. Check that TensorRT builds an engine
+  before anything else:
+
+  ```bash
+  python -c "import torch, tensorrt as trt; print(torch.cuda.get_device_capability(), torch.ones(2, device='cuda').sum().item(), trt.__version__)"
+  python -c "import torch, torch_tensorrt; m = torch.nn.Linear(8, 8).cuda().eval(); x = torch.ones(1, 8, device='cuda'); print((torch_tensorrt.compile(m, ir='dynamo', inputs=[x])(x) - m(x)).abs().max())"
+  ```
+
+- **Memory:** the Orin Nano reports about 7.4 GiB in `MemTotal`. The Thor peaks at 4,983 MiB above idle,
+  so a headless board should have about 1.5 GiB to spare. The engines are built for the Orin's GPU, so the
+  peak can differ somewhat. Run headless (`sudo systemctl isolate multi-user.target`), and with
+  `OPT_LEVEL=1` on the first run: on the Thor it built in half the time, peaked 0.3 GiB lower, and ran a
+  chunk 2.4% slower.
+- **The weights dump** runs on the board itself (0.91 GiB). It reads the 14.5 GB float32 checkpoint.
+- **Disk:** use an NVMe drive with about 40 GB free, for the checkpoint, the 7.2 GB dump, the engines
+  and the 5.2 GB of `.pte` files.
+- **Expect it to be slower** than the Thor, both to export and per chunk.
+- **Send back** `<output folder>.measure/` and the output of `chunk_bench.py`.
+
 ## Notes
 
 - **GPU memory on a Thor with a hugepage pool** comes from that pool, which `MemAvailable` doesn't show.
