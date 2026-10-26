@@ -62,12 +62,15 @@ as inputs.
 ## 2. The weights dump (once)
 
 The export maps the policy's weights from one bf16 file, which this step writes once. The file holds
-them as the export's model holds them: in bfloat16, with the task's compact token embedding. The step
-loads the policy on the CPU and writes the file one tensor at a time. Measured, it held at most
-9.3 GiB, because lerobot loads the vision tower in float32 before it is stored in bfloat16. Add the pages
-of the 14.5 GB float32 checkpoint it reads, which the kernel can reclaim. On the GPU it used 0.3 GB,
-for the prompt's tokenizer steps. Run it on the Thor itself or on any machine with about 12 GB of free
-RAM. An 8 GB Orin Nano can't run it.
+them as the export's model holds them: in bfloat16, with the task's compact token embedding.
+
+The step loads nothing. It builds the policy on the meta device and makes the export's changes to it.
+Then Torch-TensorRT's `save_weights_for_mapping(..., source=checkpoint_source(...))` reads the
+checkpoint in 64 MiB chunks, casts them and writes them.
+
+Measured: 0.91 GiB of process memory and 0.3 GB of GPU, for the prompt's tokenizer steps, in 25 s. The
+pages of the 14.5 GB float32 checkpoint it reads are mapped clean, so the kernel can reclaim them. It runs
+on the board itself, an 8 GB Orin Nano included. It needs the Torch-TensorRT branch at `4d77b3ad13` or later.
 
 The policy folder needs `config.json`, `policy_preprocessor.json`, `policy_postprocessor.json` and
 `model.safetensors`:
@@ -78,7 +81,7 @@ PYTHONPATH=src:examples/export:$TORCH_TENSORRT_PY:$H DUMP_WEIGHTS=pi05_dump.safe
   REF_CACHE=$H/pi05_ref.npz UNROLLED=1 \
   python $H/run_anthony.py $H/anth_step_export.py --policy.path=<pi05_base folder> \
   "--task=pick up the red block" --output_dir=/tmp/pi05_dump_run
-# prints "dumped the weights to pi05_dump.safetensors (6.74 GiB)"
+# prints "dumped 6.74 GiB of weights to pi05_dump.safetensors" (7,241,148,522 bytes)
 ```
 
 Copy the file to the board's disk, not to tmpfs: a tmpfs copy would hold its 6.8 GB in RAM.

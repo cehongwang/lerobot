@@ -49,23 +49,34 @@ def latency_ms(fn, warmup=10, runs=50):
 def dump_weights(policy_path: str, task: str, path: str) -> None:
     """DUMP_WEIGHTS (one-time, its own process): the policy's weights as PI05Export leaves them (bfloat16
     storage, the task's compact token embedding), keyed by parameter name, so MMAP_WEIGHTS can map them in
-    the dtypes the model uses. The policy loads on the CPU, since nothing here runs it; only the prompt's
-    tokenizer steps touch the GPU. The file is written one tensor at a time, so the process holds the
-    policy once and no copy of the file."""
+    the dtypes the model uses. Nothing is loaded: the policy is built on the meta device, changed as
+    PI05Export changes it, and save_weights_for_mapping reads, casts and writes the checkpoint one chunk
+    at a time. Only the prompt's tokenizer steps touch the GPU."""
     from types import SimpleNamespace
 
     import pi05_recipe
+    from safetensors import safe_open
+    from torch_tensorrt.dynamo.tools import checkpoint_source, save_weights_for_mapping
+    from transformers.utils import cached_file
 
     from lerobot.configs.policies import PreTrainedConfig
     from lerobot.policies.pi05.modeling_pi05 import PI05Policy
+    from lerobot.policies.pretrained import _parameters_on_meta
     from lerobot.processor import PolicyProcessorPipeline, TokenizerProcessorStep
     from lerobot.utils.constants import OBS_STATE
-    from torch_tensorrt.dynamo.tools import save_weights_for_mapping
 
     config = PreTrainedConfig.from_pretrained(policy_path)
     config.device = "cpu"
-    policy = PI05Policy.from_pretrained(policy_path, config=config).eval()
-    rss_anon("loading the policy on the CPU")
+    model_file = cached_file(policy_path, "model.safetensors")
+    with _parameters_on_meta():
+        policy = PI05Policy(config).eval()
+    # The model's name for each checkpoint key, as load_complete_checkpoint renames them.
+    keys = {}
+    with safe_open(model_file, framework="pt", device="cpu") as checkpoint:
+        for key in checkpoint.keys():
+            stub = {key: torch.empty(checkpoint.get_slice(key).get_shape(), device="meta")}
+            for name in policy._fix_pytorch_state_dict_keys(stub, config):
+                keys[name if name.startswith("model.") else f"model.{name}"] = key
     # What PI05Export.__init__ does to the policy after its eager reference run.
     pi05_recipe.store_in_bfloat16(policy)
     export = SimpleNamespace(policy=policy, policy_path=policy_path, task=task,
@@ -73,11 +84,25 @@ def dump_weights(policy_path: str, task: str, path: str) -> None:
     preprocessor, _ = pi05_recipe.PI05Export.processors(export)
     tokenizer = next(i for i, s in enumerate(preprocessor.steps) if isinstance(s, TokenizerProcessorStep))
     export.text_steps = PolicyProcessorPipeline(steps=preprocessor.steps[: tokenizer + 1])
+    token_ids = pi05_recipe.PI05Export.prompt_token_ids(export)
     language_model = policy.model.paligemma_with_expert.paligemma.model.language_model
-    language_model.embed_tokens = pi05_recipe.CompactEmbedding(
-        language_model.embed_tokens, pi05_recipe.PI05Export.prompt_token_ids(export))
-    rss_anon("bfloat16 storage and the compact embedding")
-    save_weights_for_mapping(policy, path)
+    vocabulary = language_model.embed_tokens.num_embeddings
+    compact = pi05_recipe.CompactEmbedding(language_model.embed_tokens, token_ids)
+    # The row table is computed from the token ids, which a meta tensor would drop.
+    rows = torch.zeros(vocabulary, dtype=torch.long)
+    rows[token_ids] = torch.arange(len(token_ids))
+    compact.register_buffer("rows", rows)
+    language_model.embed_tokens = compact
+    embedding = "model.paligemma_with_expert.paligemma.model.language_model.embed_tokens"
+    read = checkpoint_source(model_file, lambda name: keys[name])
+    table = safe_open(model_file, framework="pt", device="cpu").get_slice(keys[f"{embedding}.weight"])
+
+    def source(name: str, like: torch.Tensor):
+        if name == f"{embedding}.embedding.weight":  # only the task's rows of the token embedding
+            return (table[i : i + 1] for i in token_ids.tolist())
+        return read(name, like)
+
+    save_weights_for_mapping(policy, path, source=source)
     rss_anon("writing the weights")
     print(f"dumped the weights to {path} ({os.path.getsize(path) / 2**30:.2f} GiB)", flush=True)
 
