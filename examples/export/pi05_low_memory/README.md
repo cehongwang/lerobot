@@ -32,7 +32,7 @@ Tested on a Jetson AGX Thor (sm_110, CUDA 13), Python 3.12:
 |---|---|
 | torch, torchvision | `2.15.0.dev20260930+cu132`, `0.30.0.dev20260930+cu132` (`download.pytorch.org/whl/nightly/cu132`) |
 | executorch | `1.6.0.dev20261020+cu132` (same index) |
-| TensorRT | `tensorrt_cu13_libs` and `tensorrt_cu13_bindings` `11.4.0.106` (`pypi.nvidia.com`) |
+| TensorRT | `tensorrt_cu13`, `tensorrt_cu13_libs` and `tensorrt_cu13_bindings` `11.4.0.106` (`pypi.nvidia.com`); `import tensorrt` needs all three |
 | transformers | `5.5.4` |
 | Torch-TensorRT | branch `cehongw/pi05-low-memory-repro` of `pytorch/TensorRT`, used from source, Python-only |
 | lerobot | this branch (`cehongwang/lerobot:pi05-6gb-repro`), from `src/` |
@@ -75,7 +75,8 @@ pages of the 14.5 GB float32 checkpoint it reads are mapped clean, so the kernel
 on the board itself, an 8 GB Orin Nano included. It needs the Torch-TensorRT branch at `4d77b3ad13` or later.
 
 The policy folder needs `config.json`, `policy_preprocessor.json`, `policy_postprocessor.json` and
-`model.safetensors`:
+`model.safetensors`. **Set `"dtype": "bfloat16"` in its `config.json` first:** `lerobot/pi05_base` ships
+`"float32"`. The export reads the same config.
 
 ```bash
 H=examples/export/pi05_low_memory
@@ -132,10 +133,13 @@ python examples/export/pi05_low_memory/chunk_bench.py ours <output folder>
 # [result] ours: median of 3 x 100 chunks ... ms, max action error vs test case ...
 ```
 
-## On a Jetson Orin Nano 8 GB (not run yet)
+## On a Jetson Orin Nano 8 GB
 
-The same steps should apply on JetPack 7.2 or later. JetPack 7.2 added the Orin to the CUDA 13 stack that
-the Thor runs. JetPack 6 can't run them: it has CUDA 12.6, and its torch wheels stop at 2.8.
+Anthony Shoumikhin ran these steps on an Orin Nano 8 GB. The export peaked at about 3.3 GB above idle, a
+chunk took about 615 ms, and the largest action error was 0.044.
+
+It needs JetPack 7.2 or later. JetPack 7.2 added the Orin to the CUDA 13 stack that the Thor runs.
+JetPack 6 can't run these steps: it has CUDA 12.6, and its torch wheels stop at 2.8.
 
 - **The wheels:** the torch and executorch builds above have `sm_80` kernels, which run on the Orin's
   `sm_87`; torch warns that no build supports the GPU. `libnvinfer.so.11` in the TensorRT 11.4 wheel has
@@ -144,20 +148,16 @@ the Thor runs. JetPack 6 can't run them: it has CUDA 12.6, and its torch wheels 
 
   ```bash
   python -c "import torch, tensorrt as trt; print(torch.cuda.get_device_capability(), torch.ones(2, device='cuda').sum().item(), trt.__version__)"
-  python -c "import torch, torch_tensorrt; m = torch.nn.Linear(8, 8).cuda().eval(); x = torch.ones(1, 8, device='cuda'); print((torch_tensorrt.compile(m, ir='dynamo', inputs=[x])(x) - m(x)).abs().max())"
+  python -c "import torch, torch_tensorrt; m = torch.nn.Linear(8, 8).cuda().eval(); x = torch.ones(1, 8, device='cuda'); t = torch_tensorrt.compile(m, ir='dynamo', inputs=[x], min_block_size=1); assert any(n.startswith('_run_on_acc') for n, _ in t.named_children()), 'no TensorRT engine'; print((t(x) - m(x)).abs().max())"
   ```
 
-- **Memory:** the Orin Nano reports about 7.4 GiB in `MemTotal`. The Thor peaks at 4,983 MiB above idle,
-  so a headless board should have about 1.5 GiB to spare. The engines are built for the Orin's GPU, so the
-  peak can differ somewhat. Run headless (`sudo systemctl isolate multi-user.target`), and with
-  `OPT_LEVEL=1` on the first run: on the Thor it built in half the time, peaked 0.3 GiB lower, and ran a
-  chunk 2.4% slower.
+  `min_block_size=1` matters: without it, a graph this small stays in PyTorch and no engine is built.
+- **Memory:** the Orin Nano reports about 7.4 GiB in `MemTotal`. Run headless
+  (`sudo systemctl isolate multi-user.target`).
+- **Keep optimization level 3**, the default. On the Orin it ran a chunk about 42% faster than level 1.
 - **The weights dump** runs on the board itself (0.91 GiB). It reads the 14.5 GB float32 checkpoint.
 - **Disk:** use an NVMe drive with about 40 GB free, for the checkpoint, the 7.2 GB dump, the engines
   and the 5.2 GB of `.pte` files.
-- **Expect it to be slower** than the Thor, both to export and per chunk.
-- **Send back** `<output folder>.measure/` and the output of `chunk_bench.py`.
-
 ## Notes
 
 - **GPU memory on a Thor with a hugepage pool** comes from that pool, which `MemAvailable` doesn't show.
